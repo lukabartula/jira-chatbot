@@ -156,7 +156,7 @@ function displayWelcomeMessages() {
 // Enhanced project summary with more detailed information
 async function loadProjectSummary() {
   try {
-    const response = await fetch(`http://localhost:3000/api/project-summary`);
+    const response = await fetch(`/api/project-summary`);
     // const response = await fetch(`${window.location.origin}/api/project-summary`);
     const data = await response.json();
 
@@ -205,7 +205,7 @@ async function fetchJiraData(query) {
   showTypingIndicator();
 
   try {
-    const response = await fetch(`http://localhost:3000/api/query`, {
+    const response = await fetch(`/api/query`, {
     // const response = await fetch(`${window.location.origin}/api/query`, {
       method: "POST",
       headers: {
