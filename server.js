@@ -25,6 +25,11 @@ const openai = new OpenAI({
 app.use(cors());
 app.use(express.json());
 
+// Serve static files from Vite build
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, "dist")));
+
 // Jira auth configuration
 const JIRA_URL = process.env.JIRA_URL;
 console.log("JIRA_URL", JIRA_URL);

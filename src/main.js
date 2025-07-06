@@ -11,7 +11,7 @@ const projectName = document.querySelector(".bg-accent span").textContent.split(
 const welcomeMessages = [
   `👋 Welcome to Jira Assistant for Project ${projectName}!`,
   "I can help you check project status, track tasks, find assignees, and more.",
-  "Try asking questions like:\n• What's the status of our project?\n• Show me open tasks assigned to Sarah\n• Are there any blockers in the current sprint?\n• What task is IHKA-201\n• What's due this week?",
+  "Try asking questions like:\n• What's the status of our project?\n• Show me open tasks assigned to Sarah\n• Are there any blockers in the current sprint?\n• What task is IHKA-201?\n• What's due this week?",
 ];
 
 // Bot is typing indicator
