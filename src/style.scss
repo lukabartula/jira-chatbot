@@ -1,0 +1,269 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@100;200;300;400;500;600;700&display=swap");
+
+/*
+  1. Use a more-intuitive box-sizing model.
+*/
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+/*
+  2. Remove default margin
+*/
+* {
+  margin: 0;
+  padding: 0;
+}
+/*
+  3. Allow percentage-based heights in the application
+*/
+html,
+body {
+  height: 100%;
+}
+/*
+  Typographic tweaks!
+  4. Add accessible line-height
+  5. Improve text rendering
+*/
+body {
+  display: grid;
+  place-items: center;
+  font-family: Poppins, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  @apply text-base lg:text-lg;
+  background-color: #111827; /* Dark background for the app */
+}
+/*
+  6. Improve media defaults
+*/
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+/*
+  7. Remove built-in form typography styles
+*/
+input,
+button,
+textarea,
+select {
+  font: inherit;
+}
+/*
+  8. Avoid text overflows
+*/
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  overflow-wrap: break-word;
+  font-weight: 700;
+  @apply mb-5 lg:mb-6;
+}
+
+h1 {
+  @apply text-5xl lg:text-6xl;
+}
+h2 {
+  @apply text-4xl lg:text-5xl;
+}
+h3 {
+  @apply text-3xl lg:text-4xl;
+}
+h4 {
+  @apply text-2xl lg:text-3xl;
+}
+h5 {
+  @apply text-xl lg:text-2xl;
+}
+h6 {
+  @apply text-lg lg:text-xl;
+}
+
+p {
+  @apply mb-4 lg:mb-5;
+}
+
+.container {
+  @apply h-full;
+}
+
+/* Chat bubble animations */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* Custom scrollbar for chat area */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.5);
+  border-radius: 2px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Add custom classes if needed by your Tailwind setup */
+:root {
+  --color-background: #111827;
+  --color-primary: #1f2937;
+  --color-secondary: #242f41;
+  --color-accent: #374151;
+  --color-bubbleUser: #4f46e5;
+  --color-bubbleBot: #3e4c5e;
+  --color-light: #6b7280;
+}
+
+.bg-background {
+  background-color: var(--color-background);
+}
+.bg-primary {
+  background-color: var(--color-primary);
+}
+.bg-secondary {
+  background-color: var(--color-secondary);
+}
+.bg-accent {
+  background-color: var(--color-accent);
+}
+.bg-bubbleUser {
+  background-color: var(--color-bubbleUser);
+}
+.bg-bubbleBot {
+  background-color: var(--color-bubbleBot);
+}
+.border-light {
+  border-color: var(--color-light);
+}
+.text-light {
+  color: var(--color-light);
+}
+.placeholder-light::placeholder {
+  color: var(--color-light);
+}
+
+/* Enhanced chat bubbles */
+#chat-box > div {
+  margin-bottom: 1.75rem; /* Add more space between messages */
+}
+
+/* Make bullet points look nicer in chat */
+#chat-box .bg-bubbleBot ul,
+#chat-box .bg-bubbleBot ol {
+  padding-left: 1.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Bold and emphasis for formatted text */
+#chat-box strong {
+  font-weight: 600;
+}
+
+#chat-box em {
+  font-style: italic;
+  opacity: 0.9;
+}
+
+/* Issue detail styling */
+#chat-box h2 {
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  padding-bottom: 6px;
+}
+
+#chat-box h3 {
+  margin-top: 12px;
+  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Improved spacing for key-value pairs */
+#chat-box .flex {
+  margin-bottom: 4px;
+  align-items: baseline;
+}
+
+/* Quote styling for comments */
+#chat-box blockquote {
+  border-left: 3px solid rgba(255, 255, 255, 0.3);
+  padding-left: 8px;
+  margin: 8px 0;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Links and issue references */
+#chat-box .text-blue-400 {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  transition: all 0.2s ease;
+}
+
+#chat-box .text-blue-400:hover {
+  opacity: 0.8;
+}
+
+/* Style for the typing indicator */
+.typing-dots {
+  display: flex;
+  align-items: center;
+  height: 20px;
+}
+
+.typing-dots span {
+  height: 8px;
+  width: 8px;
+  margin: 0 2px;
+  background-color: rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  display: inline-block;
+  animation: wave 1.3s infinite ease-in-out;
+}
+
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes wave {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-6px);
+  }
+}
