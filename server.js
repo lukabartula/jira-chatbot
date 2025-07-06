@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 import cors from "cors";
 import { OpenAI } from "openai";
 import * as cheerio from "cheerio";
+import path from "path";
+import { fileURLToPath } from "url";
 import { URL } from "url";
 
 // Load environment variables
@@ -7469,6 +7471,10 @@ app.get("/api/confluence/status", async (req, res) => {
       message: error.message
     });
   }
+});
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
 app.listen(port, () => {
