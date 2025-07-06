@@ -222,7 +222,7 @@ function preprocessQuery(query) {
       standardized: "show closed tasks",
     },
     {
-      regex: /(?:show|list|find|get) (?:all |the |me |)?(?:high priority|important|critical) (?:tasks|issues|tickets)/i,
+      regex: /(?:show|list|find|get) (?:all |the |me |)?(?:high priority|important|highest priority|critical) (?:tasks|issues|tickets)/i,
       standardized: "show high priority tasks",
     },
     {
