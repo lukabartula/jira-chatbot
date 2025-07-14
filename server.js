@@ -15,7 +15,7 @@ import {
   preprocessQuery,
   determineFieldsForIntent,
 
- } from "./utils/jiraUtils";
+ } from "./utils/jiraUtils.js";
 
 // Load environment variables
 dotenv.config();
