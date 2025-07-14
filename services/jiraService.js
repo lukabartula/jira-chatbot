@@ -1,5 +1,5 @@
 import { sanitizeJql } from '../utils/jiraUtils.js';
-import { extractEntitiesFromQuery } from '../utils/extractors.js';
+// import { extractEntitiesFromQuery } from '../utils/extractors.js';
 import { openai } from '../config/openaiConfig.js';
 import { safeJqlTemplates } from '../config/jiraConfig.js';
 
