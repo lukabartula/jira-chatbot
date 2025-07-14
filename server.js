@@ -3,7 +3,10 @@ import axios from "axios";
 import dotenv from "dotenv";
 import cors from "cors";
 import { OpenAI } from "openai";
+import { openai } from "./config/openaiConfig.js";
 import * as cheerio from "cheerio";
+import { safeJqlTemplates } from "./config/jiraConfig.js";
+import { fallbackGenerateJQL, generateJQL } from "./services/jiraService.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { URL } from "url";
@@ -45,15 +48,6 @@ app.use(express.static(path.join(__dirname, "dist")));
 const JIRA_URL = process.env.JIRA_URL;
 console.log("JIRA_URL", JIRA_URL);
 
-// function createJiraLink(key) {
-//   return `[${key}](${JIRA_URL}/browse/${key})`;
-// }
-
-// function createJiraFilterLink(jql) {
-//   const encoded = encodeURIComponent(jql);
-//   return `${JIRA_URL}/issues/?jql=${encoded}`;
-// }
-
 const JIRA_USER = process.env.JIRA_USER;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 
@@ -62,319 +56,58 @@ const auth = {
   password: JIRA_API_TOKEN,
 };
 
-// // Improved JQL syntax validator and fixer
-// function sanitizeJQL(jql) {    // DELETE NOW
-//   if (!jql) return `project = ${process.env.JIRA_PROJECT_KEY}`;
-
-//   // Replace common syntax errors
-//   let sanitized = jql;
-
-//   // Make sure it starts with project specification
-//   if (!sanitized.includes(`project = `) && !sanitized.includes(`project=`)) {
-//     sanitized = `project = "${process.env.JIRA_PROJECT_KEY}" AND (${sanitized})`;
-//   }
-
-//   // If it's just a project specification, make sure it's correctly formatted
-//   if (sanitized.match(/^project\s*=\s*"?[^"]*"?\s*$/)) {
-//     sanitized = `project = "${process.env.JIRA_PROJECT_KEY}"`;
-//   }
-
-//   // Fix incorrect comma usage - replace commas not inside parentheses with AND
-//   sanitized = sanitized.replace(/,(?![^(]*\))/g, " AND ");
-
-//   // Fix common operator issues
-//   sanitized = sanitized.replace(/\s+is\s+empty\b/gi, " is EMPTY");
-//   sanitized = sanitized.replace(/\s+is\s+not\s+empty\b/gi, " is not EMPTY");
-
-//   // Make sure any text values containing spaces are in quotes
-//   sanitized = sanitized.replace(/(\w+)\s*=\s*([^"'\s][^\s]*\s+[^\s"']*[^"'\s])/g, '$1 = "$2"');
-
-//   // Add quotes around project key if missing
-//   sanitized = sanitized.replace(/project\s*=\s*([^"'][^,\s)]*)/g, 'project = "$1"');
-
-//   // Ensure reserved words are properly quoted
-//   const reservedWords = ["limit", "and", "or", "not", "empty", "null", "order", "by", "asc", "desc"];
-//   for (const word of reservedWords) {
-//     const regex = new RegExp(`\\b${word}\\b(?<!["'])`, "gi");
-//     sanitized = sanitized.replace(regex, `"${word}"`);
-//   }
-
-//   // Fix missing quotes in field values
-//   const commonFields = ["status", "priority", "assignee", "reporter", "creator", "issuetype"];
-//   for (const field of commonFields) {
-//     const regex = new RegExp(`${field}\\s*=\\s*([^"'][^\\s)]*(?:[^"']|$))`, "g");
-//     sanitized = sanitized.replace(regex, `${field} = "$1"`);
-//   }
-
-//   // Fix IN clauses - ensure proper format
-//   sanitized = sanitized.replace(/(\w+)\s+in\s+\(([^)]+)\)/gi, (match, field, values) => {
-//     const fixedValues = values
-//       .split(",")
-//       .map((v) => v.trim())
-//       .map((v) => (v.startsWith('"') && v.endsWith('"') ? v : `"${v}"`))
-//       .join(", ");
-//     return `${field} IN (${fixedValues})`;
-//   });
-
-//   // Fix space-sensitive formats
-//   sanitized = sanitized.replace(/\bORDER BY\b/gi, "ORDER BY");
-
-//   // Make sure != is properly spaced
-//   sanitized = sanitized.replace(/(\w+)!=([^=])/g, "$1 != $2");
-
-//   // Final safety check - if query becomes too mangled, return a safe default
-//   if (sanitized.includes("=") && !sanitized.match(/project\s*=/) && !sanitized.match(/key\s*=/)) {
-//     sanitized = `project = "${process.env.JIRA_PROJECT_KEY}" AND ${sanitized}`;
-//   }
-
-//   console.log("Sanitized JQL:", sanitized);
-//   return sanitized;
-// }
-
-// // Function to extract plain text from Atlassian Document Format (ADF)
-// function extractTextFromADF(adf) {
-//   if (!adf || !adf.content || !Array.isArray(adf.content)) {
-//     return ""; // Return empty string if no valid content
-//   }
-
-//   let result = "";
-
-//   // Recursively extract text from content nodes
-//   function processNode(node) {
-//     if (node.text) {
-//       return node.text;
-//     }
-
-//     if (node.content && Array.isArray(node.content)) {
-//       return node.content.map(processNode).join("");
-//     }
-
-//     return "";
-//   }
-
-//   // Process each top-level paragraph or other content block
-//   for (const block of adf.content) {
-//     if (block.type === "paragraph" || block.type === "text") {
-//       result += processNode(block) + "\n";
-//     } else if (block.type === "bulletList" || block.type === "orderedList") {
-//       // Handle lists
-//       if (block.content) {
-//         block.content.forEach((item) => {
-//           if (item.type === "listItem" && item.content) {
-//             result += "• " + item.content.map(processNode).join("") + "\n";
-//           }
-//         });
-//       }
-//     } else if (block.content) {
-//       // Other block types with content
-//       result += block.content.map(processNode).join("") + "\n";
-//     }
-//   }
-
-//   return result.trim();
-// }
-
-// // Comprehensive query preprocessor with standardized forms
-// function preprocessQuery(query) {
-//   // Trim whitespace and normalize
-//   query = query.trim().toLowerCase();
-
-//   // Map of common query patterns to standardized forms
-//   const queryMappings = [
-//     // Project overview and health
-//     {
-//       regex: /^(?:how is|how's|what's|what is) (?:the )?project(?:'s)? (?:status|progress|going|health)/i,
-//       standardized: "show project status",
-//     },
-//     {
-//       regex: /^(?:give me|show|display) (?:the |a )?(?:project|overall) (?:status|overview|summary|health)/i,
-//       standardized: "show project status",
-//     },
-//     { regex: /^(?:project|status) (?:overview|health|summary)/i, standardized: "show project status" },
-
-//     // NEW: Issue Types queries
-//     {
-//       regex: /(?:what|which|show|list|tell me|get) (?:are |is |the )?(?:work|issue|task) types/i,
-//       standardized: "show issue types",
-//     },
-//     {
-//       regex: /types? of (?:work|issue|task)/i,
-//       standardized: "show issue types",
-//     },
-//     {
-//       regex: /(?:work|issue|task) categories/i,
-//       standardized: "show issue types",
-//     },
-
-//     // Timeline and deadlines
-//     { regex: /(?:timeline|schedule|roadmap|plan|calendar|deadlines)/i, standardized: "show project timeline" },
-//     { regex: /what(?:'s| is)? (?:coming up|planned|scheduled|due)/i, standardized: "show upcoming deadlines" },
-//     { regex: /what(?:'s| is)? due (?:this|next) (?:week|month)/i, standardized: "show upcoming deadlines" },
-//     { regex: /when (?:will|is|are) .* (?:due|finish|complete|done)/i, standardized: "show project timeline" },
-//     { regex: /what(?:'s| is) (?:the |our )?schedule/i, standardized: "show project timeline" },
-
-//     // Blockers and impediments
-//     { regex: /(?:blocker|blocking issue|impediment|what's blocking|what is blocking)/i, standardized: "show project blockers" },
-//     { regex: /what(?:'s| is)? (?:preventing|stopping|holding up)/i, standardized: "show project blockers" },
-//     { regex: /(?:risk|risks|at risk|critical issue)/i, standardized: "show high risk items" },
-
-//     // Workloads and assignments
-//     { regex: /who(?:'s| is) (?:working on|assigned to|responsible for)/i, standardized: "show team workload" },
-//     { regex: /what(?:'s| is) (?:everyone|everybody|the team) working on/i, standardized: "show team workload" },
-//     { regex: /(?:workload|bandwidth|capacity|allocation)/i, standardized: "show team workload" },
-//     { regex: /who(?:'s| is) (?:overloaded|busy|free|available)/i, standardized: "show team workload" },
-
-//     // Tasks and issues
-//     { regex: /(?:show|list|find|get) (?:all |the | me |)?(?:open|active|current) (?:tasks|issues|tickets)/i, standardized: "show open tasks" },
-//     {
-//       regex: /(?:show|list|find|get) (?:all |the | me |)?(?:closed|completed|done|resolved) (?:tasks|issues|tickets)/i,
-//       standardized: "show closed tasks",
-//     },
-//     {
-//       regex: /(?:show|list|find|get) (?:all |the |me |)?(?:high priority|important|highest priority|critical) (?:tasks|issues|tickets)/i,
-//       standardized: "show high priority tasks",
-//     },
-//     {
-//       regex: /(?:show|list|find|get|what is|which is|what are|which are) (?:the |all |a | me)?(?:highest priority|high priority|important|critical) (?:tasks|issues|tickets)/i,
-//       standardized: "show high priority tasks",
-//     },
-//     {
-//       regex: /(?:show|list|find|get|what is|which is) (?:the |a |me )?(?:highest priority|high priority|important|critical) (?:task|issue|ticket)/i,
-//       standardized: "show highest priority task",
-//     },
-  
-//     {
-//       regex: /(?:show|list|find|get) (?:all |the |)?(?:unassigned|without assignee) (?:tasks|issues|tickets)/i,
-//       standardized: "show unassigned tasks",
-//     },
-
-//     // Recent activity
-//     { regex: /(?:recent|latest|last|newest|what's new|what is new)/i, standardized: "show recent updates" },
-//     { regex: /what(?:'s| has) changed/i, standardized: "show recent updates" },
-//     { regex: /what(?:'s| has) happened/i, standardized: "show recent updates" },
-
-//     // Sprint related
-//     { regex: /(?:current|active|ongoing) sprint/i, standardized: "show current sprint" },
-//     { regex: /sprint status/i, standardized: "show current sprint" },
-//     { regex: /(?:sprint|iteration) progress/i, standardized: "show current sprint" },
-
-//     // Most recent task specifically
-//     {
-//       regex: /(?:latest|most recent|last) (?:edited|updated|modified|changed) (?:task|issue|ticket)/i,
-//       standardized: "show most recently updated task",
-//     },
-//     {
-//       regex: /(?:what|show me|tell me about) (?:the )?(?:dependencies|related issues|linked tasks|blockers) (?:for|of) (NIHK-\d+)/i,
-//       standardized: "show dependencies for $1",
-//     },
-//     {
-//       regex: /(?:what|show|list|tell me) (?:the|are|all|my) (?:team'?s?|team member'?s?) (?:current )?(?:workload|assignments|tasks)/i,
-//       standardized: "show team workload",
-//     },
-//     {
-//       regex: /(?:compare|how does|what's the difference between) (NIHK-\d+) (?:and|vs|versus) (NIHK-\d+)/i,
-//       standardized: "compare issues $1 $2",
-//     },
-//     {
-//       regex: /(?:what|how many|count) comments (?:are there |have been |were added |exist )?(?:on|for|in) (NIHK-\d+)/i,
-//       standardized: "show comments for $1",
-//     },
-//     {
-//       regex: /(?:who|which team member|which person) (?:has|is assigned|is working on) (?:the )?most (?:tasks|issues|work)/i,
-//       standardized: "show busiest team member",
-//     },
-
-//     // Specific task by ID
-//     {
-//       regex: new RegExp(`(?:show|tell me about|what is|details for|info on)\\s+${process.env.JIRA_PROJECT_KEY}-\\d+`, "i"),
-//       standardized: query,
-//     },
-//   ];
-
-//   // Find a match and return the standardized form
-//   for (const mapping of queryMappings) {
-//     if (mapping.regex.test(query)) {
-//       console.log(`Standardized query from "${query}" to "${mapping.standardized}"`);
-//       return mapping.standardized;
-//     }
-//   }
-
-//   // If no mapping found, clean up the query a bit
-//   const cleanQuery = query.replace(/[.,!?;]/g, "").trim();
-
-//   return cleanQuery;
-// }
 console.log("process.env.JIRA_PROJECT_KEY", process.env.JIRA_PROJECT_KEY);
 
-// Safe JQL templates for common query types
-const safeJqlTemplates = {
-  PROJECT_STATUS: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY updated DESC`,
-  TIMELINE: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS NOT EMPTY ORDER BY duedate ASC`,
-  TIMELINE_UPCOMING: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= now() ORDER BY duedate ASC`,
-  TIMELINE_OVERDUE: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate < now() AND status != "Done" ORDER BY duedate ASC`,
-  BLOCKERS: `project = ${process.env.JIRA_PROJECT_KEY} AND (priority in ("High", "Highest") OR status = "Blocked" OR labels = "blocker") AND status not in ("Done", "Closed", "Resolved")`,
-  HIGHEST_PRIORITY_SINGLE: `project = ${process.env.JIRA_PROJECT_KEY} AND priority in ("High", "Highest") AND status not in ("Done", "Closed", "Resolved") ORDER BY priority DESC, updated DESC`,
-  HIGH_PRIORITY: `project = ${process.env.JIRA_PROJECT_KEY} AND priority in ("High", "Highest") AND status not in ("Done", "Closed", "Resolved")`,
-  OPEN_TASKS: `project = ${process.env.JIRA_PROJECT_KEY} AND status in ("Open", "In Progress", "To Do", "Reopened")`,
-  HIGH_PRIORITY_COUNT: `project = ${process.env.JIRA_PROJECT_KEY} AND priority in ("High", "Highest") AND status not in ("Done", "Closed", "Resolved")`,
-  CLOSED_TASKS: `project = ${process.env.JIRA_PROJECT_KEY} AND status in ("Done", "Closed", "Resolved")`,
-  ASSIGNED_TASKS: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS NOT EMPTY AND status not in ("Done", "Closed", "Resolved")`,
-  UNASSIGNED_TASKS: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS EMPTY AND status not in ("Done", "Closed", "Resolved")`,
-  RECENT_UPDATES: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY updated DESC`,
-  CURRENT_SPRINT: `project = ${process.env.JIRA_PROJECT_KEY} AND sprint in openSprints()`,
-  MOST_RECENT_TASK: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY updated DESC`,
-  ISSUE_TYPES: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY issuetype ASC`,
-};
 
-// Enhanced fallback JQL generator
-function fallbackGenerateJQL(query, intent) {
-  console.log("Using fallback JQL generation for query:", query, "with intent:", intent);
+// // Enhanced fallback JQL generator
+// function fallbackGenerateJQL(query, intent) {
+//   console.log("Using fallback JQL generation for query:", query, "with intent:", intent);
 
-  // Look for keywords to determine the right fallback
-  query = query.toLowerCase();
+//   // Look for keywords to determine the right fallback
+//   query = query.toLowerCase();
 
-  // Try to match intent to a safe template first
-  if (intent === "PROJECT_STATUS") return safeJqlTemplates.PROJECT_STATUS;
-  if (intent === "TASK_LIST" && /(how many|count|number of).*(high|highest|important|critical|priority).*(tasks|issues|tickets)/i.test(query)) return safeJqlTemplates.HIGH_PRIORITY_COUNT;
-  if (intent === "TIMELINE") return safeJqlTemplates.TIMELINE;
-  if (intent === "BLOCKERS") return safeJqlTemplates.BLOCKERS;
-  if (intent === "TASK_LIST" && /open|active|current/i.test(query)) return safeJqlTemplates.OPEN_TASKS;
-  if (intent === "TASK_LIST" && /closed|completed|done|resolved/i.test(query)) return safeJqlTemplates.CLOSED_TASKS;
-  if (intent === "TASK_LIST" && /high|highest|important|critical|priority/i.test(query)) return safeJqlTemplates.HIGH_PRIORITY;
-  if (intent === "TASK_LIST" && /highest priority (task|issue|ticket)/i.test(query)) return safeJqlTemplates.HIGHEST_PRIORITY_SINGLE;
-  if (intent === "TASK_LIST" && /unassigned|without assignee/i.test(query)) return safeJqlTemplates.UNASSIGNED_TASKS;
-  if (intent === "ASSIGNED_TASKS") return safeJqlTemplates.ASSIGNED_TASKS;
-  if (intent === "SPRINT") return safeJqlTemplates.CURRENT_SPRINT;
-  if (intent === "WORKLOAD") return safeJqlTemplates.ASSIGNED_TASKS;
-  if (intent === "ISSUE_TYPES") return safeJqlTemplates.ISSUE_TYPES;
+//   // Try to match intent to a safe template first
+//   if (intent === "PROJECT_STATUS") return safeJqlTemplates.PROJECT_STATUS;
+//   if (intent === "TASK_LIST" && /(how many|count|number of).*(high|highest|important|critical|priority).*(tasks|issues|tickets)/i.test(query)) return safeJqlTemplates.HIGH_PRIORITY_COUNT;
+//   if (intent === "TIMELINE") return safeJqlTemplates.TIMELINE;
+//   if (intent === "BLOCKERS") return safeJqlTemplates.BLOCKERS;
+//   if (intent === "TASK_LIST" && /open|active|current/i.test(query)) return safeJqlTemplates.OPEN_TASKS;
+//   if (intent === "TASK_LIST" && /closed|completed|done|resolved/i.test(query)) return safeJqlTemplates.CLOSED_TASKS;
+//   if (intent === "TASK_LIST" && /high|highest|important|critical|priority/i.test(query)) return safeJqlTemplates.HIGH_PRIORITY;
+//   if (intent === "TASK_LIST" && /highest priority (task|issue|ticket)/i.test(query)) return safeJqlTemplates.HIGHEST_PRIORITY_SINGLE;
+//   if (intent === "TASK_LIST" && /unassigned|without assignee/i.test(query)) return safeJqlTemplates.UNASSIGNED_TASKS;
+//   if (intent === "ASSIGNED_TASKS") return safeJqlTemplates.ASSIGNED_TASKS;
+//   if (intent === "SPRINT") return safeJqlTemplates.CURRENT_SPRINT;
+//   if (intent === "WORKLOAD") return safeJqlTemplates.ASSIGNED_TASKS;
+//   if (intent === "ISSUE_TYPES") return safeJqlTemplates.ISSUE_TYPES;
 
-  // Extract any issue key that might be in the query
-  const issueKeyMatch = query.match(new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i"));
-  if (issueKeyMatch) {
-    return `key = "${issueKeyMatch[0]}"`;
-  }
+//   // Extract any issue key that might be in the query
+//   const issueKeyMatch = query.match(new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i"));
+//   if (issueKeyMatch) {
+//     return `key = "${issueKeyMatch[0]}"`;
+//   }
 
-  // If no intent match or issue key, look for keywords in the query
-  if (/(?:work|issue|task)\s+types?|types? of work|categories/i.test(query)) return safeJqlTemplates.ISSUE_TYPES;
-  if (/timeline|deadline|due|schedule/i.test(query)) return safeJqlTemplates.TIMELINE;
-  if (/blocker|blocking|impediment|risk/i.test(query)) return safeJqlTemplates.BLOCKERS;
-  if (/high|priority|important|urgent|critical/i.test(query)) return safeJqlTemplates.HIGH_PRIORITY;
-  if (/open|active|current/i.test(query) && /task|issue|ticket/i.test(query)) return safeJqlTemplates.OPEN_TASKS;
-  if (/closed|completed|done|resolved/i.test(query)) return safeJqlTemplates.CLOSED_TASKS;
-  if (/assign|work|responsible/i.test(query)) return safeJqlTemplates.ASSIGNED_TASKS;
-  if (/recent|latest|new|update/i.test(query)) return safeJqlTemplates.RECENT_UPDATES;
-  if (/sprint/i.test(query)) return safeJqlTemplates.CURRENT_SPRINT;
+//   // If no intent match or issue key, look for keywords in the query
+//   if (/(?:work|issue|task)\s+types?|types? of work|categories/i.test(query)) return safeJqlTemplates.ISSUE_TYPES;
+//   if (/timeline|deadline|due|schedule/i.test(query)) return safeJqlTemplates.TIMELINE;
+//   if (/blocker|blocking|impediment|risk/i.test(query)) return safeJqlTemplates.BLOCKERS;
+//   if (/high|priority|important|urgent|critical/i.test(query)) return safeJqlTemplates.HIGH_PRIORITY;
+//   if (/open|active|current/i.test(query) && /task|issue|ticket/i.test(query)) return safeJqlTemplates.OPEN_TASKS;
+//   if (/closed|completed|done|resolved/i.test(query)) return safeJqlTemplates.CLOSED_TASKS;
+//   if (/assign|work|responsible/i.test(query)) return safeJqlTemplates.ASSIGNED_TASKS;
+//   if (/recent|latest|new|update/i.test(query)) return safeJqlTemplates.RECENT_UPDATES;
+//   if (/sprint/i.test(query)) return safeJqlTemplates.CURRENT_SPRINT;
 
-  // Extract assignee if present
-  const assigneeMatch = query.match(/assigned to (\w+)|(\w+)'s tasks/i);
-  if (assigneeMatch) {
-    const assignee = assigneeMatch[1] || assigneeMatch[2];
-    return `project = "${process.env.JIRA_PROJECT_KEY}" AND assignee ~ "${assignee}" ORDER BY updated DESC`;
-  }
+//   // Extract assignee if present
+//   const assigneeMatch = query.match(/assigned to (\w+)|(\w+)'s tasks/i);
+//   if (assigneeMatch) {
+//     const assignee = assigneeMatch[1] || assigneeMatch[2];
+//     return `project = "${process.env.JIRA_PROJECT_KEY}" AND assignee ~ "${assignee}" ORDER BY updated DESC`;
+//   }
 
-  // Default fallback - return open issues ordered by update date
-  return safeJqlTemplates.PROJECT_STATUS;
-}
+//   // Default fallback - return open issues ordered by update date
+//   return safeJqlTemplates.PROJECT_STATUS;
+// }
 
 // Enhanced intent analysis for more precise query understanding
 async function analyzeQueryIntent(query) {
@@ -687,190 +420,190 @@ async function analyzeQueryIntent(query) {
 }
 
 // Enhanced JQL generator with more nuanced query understanding and error recovery
-async function generateJQL(query, intent) {
-  try {
-    // Track start time for performance monitoring
-    const startTime = Date.now();
+// async function generateJQL(query, intent) {
+//   try {
+//     // Track start time for performance monitoring
+//     const startTime = Date.now();
 
-    // First, check for pre-defined templates based on standardized queries
-    if (query === "show project status") return safeJqlTemplates.PROJECT_STATUS;
-    if (query === "show project timeline") return safeJqlTemplates.TIMELINE;
-    if (query === "show upcoming deadlines") return safeJqlTemplates.TIMELINE_UPCOMING;
-    if (query === "show project blockers") return safeJqlTemplates.BLOCKERS;
-    if (query === "show high risk items") return safeJqlTemplates.HIGH_PRIORITY;
-    if (query === "show team workload") return safeJqlTemplates.ASSIGNED_TASKS;
-    if (query === "show open tasks") return safeJqlTemplates.OPEN_TASKS;
-    if (query === "show closed tasks") return safeJqlTemplates.CLOSED_TASKS;
-    if (query === "show high priority tasks") return safeJqlTemplates.HIGH_PRIORITY;
-    if (query === "show highest priority task") return safeJqlTemplates.HIGHEST_PRIORITY_SINGLE;
-    if (query === "show unassigned tasks") return safeJqlTemplates.UNASSIGNED_TASKS;
-    if (query === "show recent updates") return safeJqlTemplates.RECENT_UPDATES;
-    if (query === "show current sprint") return safeJqlTemplates.CURRENT_SPRINT;
-    if (query === "show most recently updated task") return safeJqlTemplates.MOST_RECENT_TASK;
-    if (query === "show issue types") return safeJqlTemplates.ISSUE_TYPES;
+//     // First, check for pre-defined templates based on standardized queries
+//     if (query === "show project status") return safeJqlTemplates.PROJECT_STATUS;
+//     if (query === "show project timeline") return safeJqlTemplates.TIMELINE;
+//     if (query === "show upcoming deadlines") return safeJqlTemplates.TIMELINE_UPCOMING;
+//     if (query === "show project blockers") return safeJqlTemplates.BLOCKERS;
+//     if (query === "show high risk items") return safeJqlTemplates.HIGH_PRIORITY;
+//     if (query === "show team workload") return safeJqlTemplates.ASSIGNED_TASKS;
+//     if (query === "show open tasks") return safeJqlTemplates.OPEN_TASKS;
+//     if (query === "show closed tasks") return safeJqlTemplates.CLOSED_TASKS;
+//     if (query === "show high priority tasks") return safeJqlTemplates.HIGH_PRIORITY;
+//     if (query === "show highest priority task") return safeJqlTemplates.HIGHEST_PRIORITY_SINGLE;
+//     if (query === "show unassigned tasks") return safeJqlTemplates.UNASSIGNED_TASKS;
+//     if (query === "show recent updates") return safeJqlTemplates.RECENT_UPDATES;
+//     if (query === "show current sprint") return safeJqlTemplates.CURRENT_SPRINT;
+//     if (query === "show most recently updated task") return safeJqlTemplates.MOST_RECENT_TASK;
+//     if (query === "show issue types") return safeJqlTemplates.ISSUE_TYPES;
 
-    // Check for specific issue key
-    const issueKeyPattern = new RegExp(`^\\s*${process.env.JIRA_PROJECT_KEY}-\\d+\\s*$`, "i");
-    if (issueKeyPattern.test(query)) {
-      const cleanKey = query.trim();
-      console.log("Direct issue key detected:", cleanKey);
-      return `key = "${cleanKey}"`;
-    }
+//     // Check for specific issue key
+//     const issueKeyPattern = new RegExp(`^\\s*${process.env.JIRA_PROJECT_KEY}-\\d+\\s*$`, "i");
+//     if (issueKeyPattern.test(query)) {
+//       const cleanKey = query.trim();
+//       console.log("Direct issue key detected:", cleanKey);
+//       return `key = "${cleanKey}"`;
+//     }
 
-    // Check if the query contains a JIRA issue key within it
-    const containsIssueKey = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i");
-    const matches = query.match(containsIssueKey);
-    if (matches && matches.length > 0) {
-      const issueKey = matches[0];
-      console.log("Issue key found in query:", issueKey);
-      return `key = "${issueKey}"`;
-    }
+//     // Check if the query contains a JIRA issue key within it
+//     const containsIssueKey = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i");
+//     const matches = query.match(containsIssueKey);
+//     if (matches && matches.length > 0) {
+//       const issueKey = matches[0];
+//       console.log("Issue key found in query:", issueKey);
+//       return `key = "${issueKey}"`;
+//     }
 
-    // For some intent categories, use predefined safe templates
-    if (intent === "CONVERSATION" || intent === "GREETING") {
-      return safeJqlTemplates.RECENT_UPDATES;
-    }
+//     // For some intent categories, use predefined safe templates
+//     if (intent === "CONVERSATION" || intent === "GREETING") {
+//       return safeJqlTemplates.RECENT_UPDATES;
+//     }
 
-    if (intent === "SPRINT") {
-      return safeJqlTemplates.CURRENT_SPRINT;
-    }
+//     if (intent === "SPRINT") {
+//       return safeJqlTemplates.CURRENT_SPRINT;
+//     }
 
-    if (intent === "PROJECT_STATUS") {
-      return safeJqlTemplates.PROJECT_STATUS;
-    }
+//     if (intent === "PROJECT_STATUS") {
+//       return safeJqlTemplates.PROJECT_STATUS;
+//     }
 
-    if (intent === "ISSUE_TYPES") {
-      return safeJqlTemplates.ISSUE_TYPES;
-    }
+//     if (intent === "ISSUE_TYPES") {
+//       return safeJqlTemplates.ISSUE_TYPES;
+//     }
 
-    // Special case for recent/latest task queries
-    if (/recent|latest|most recent|last|newest/i.test(query) && /edited|updated|modified|changed|task/i.test(query)) {
-      return safeJqlTemplates.MOST_RECENT_TASK;
-    }
+//     // Special case for recent/latest task queries
+//     if (/recent|latest|most recent|last|newest/i.test(query) && /edited|updated|modified|changed|task/i.test(query)) {
+//       return safeJqlTemplates.MOST_RECENT_TASK;
+//     }
 
-    // Extract specific entities from the query that might be useful for JQL
-    const extractedEntities = extractEntitiesFromQuery(query);
-    console.log("Extracted entities:", extractedEntities);
+//     // Extract specific entities from the query that might be useful for JQL
+//     const extractedEntities = extractEntitiesFromQuery(query);
+//     console.log("Extracted entities:", extractedEntities);
 
-    // If we have assignee info, and it's an assigned tasks query
-    if (extractedEntities.assignee && intent === "ASSIGNED_TASKS") {
-      return `project = "${process.env.JIRA_PROJECT_KEY}" AND assignee ~ "${extractedEntities.assignee}" AND status not in ("Done", "Closed", "Resolved") ORDER BY updated DESC`;
-    }
+//     // If we have assignee info, and it's an assigned tasks query
+//     if (extractedEntities.assignee && intent === "ASSIGNED_TASKS") {
+//       return `project = "${process.env.JIRA_PROJECT_KEY}" AND assignee ~ "${extractedEntities.assignee}" AND status not in ("Done", "Closed", "Resolved") ORDER BY updated DESC`;
+//     }
 
-    // If we have priority info, and it's a task list query
-    if (extractedEntities.priority && intent === "TASK_LIST") {
-      return `project = "${process.env.JIRA_PROJECT_KEY}" AND priority = "${extractedEntities.priority}" AND status not in ("Done", "Closed", "Resolved") ORDER BY updated DESC`;
-    }
+//     // If we have priority info, and it's a task list query
+//     if (extractedEntities.priority && intent === "TASK_LIST") {
+//       return `project = "${process.env.JIRA_PROJECT_KEY}" AND priority = "${extractedEntities.priority}" AND status not in ("Done", "Closed", "Resolved") ORDER BY updated DESC`;
+//     }
 
-    // If we have a status and it's a task list query
-    if (extractedEntities.status && intent === "TASK_LIST") {
-      return `project = "${process.env.JIRA_PROJECT_KEY}" AND status = "${extractedEntities.status}" ORDER BY updated DESC`;
-    }
+//     // If we have a status and it's a task list query
+//     if (extractedEntities.status && intent === "TASK_LIST") {
+//       return `project = "${process.env.JIRA_PROJECT_KEY}" AND status = "${extractedEntities.status}" ORDER BY updated DESC`;
+//     }
 
-    // Enhanced system prompt for JQL generation with AI
-    const systemPrompt = `
-      You are a specialized AI that converts natural language into precise Jira Query Language (JQL).
-      Your task is to generate ONLY valid JQL that will work correctly with Jira.
+//     // Enhanced system prompt for JQL generation with AI
+//     const systemPrompt = `
+//       You are a specialized AI that converts natural language into precise Jira Query Language (JQL).
+//       Your task is to generate ONLY valid JQL that will work correctly with Jira.
       
-      VERY IMPORTANT RULES:
-      1. Always add "project = ${process.env.JIRA_PROJECT_KEY}" to all JQL queries unless specifically told to search across all projects
-      2. Return ONLY the JQL query, nothing else. No explanations or additional text.
-      3. ALWAYS use double quotes for field values containing spaces
-      4. NEVER use commas outside of parentheses except in IN clauses - use AND or OR instead
-      5. NEVER use "LIMIT" in JQL - if quantity limiting is needed, use ORDER BY instead
-      6. For queries about recent/latest items, use "ORDER BY updated DESC" or "ORDER BY created DESC"
-      7. Ensure all special characters and reserved words are properly escaped
-      8. For multiple values in an IN statement, format like: status IN ("Open", "In Progress")
-      9. Avoid complex syntax with unclear operators
-      10. Avoid any syntax that might cause this error: "Expecting operator but got ','"
-      11. If the query asks about a specific person, include 'assignee ~ "PersonName"' in your JQL
-      12. If the query mentions status, always include a status condition like 'status = "In Progress"'
-      13. If any part of the query is unclear, prefer broader queries that return more results rather than potentially missing relevant issues
+//       VERY IMPORTANT RULES:
+//       1. Always add "project = ${process.env.JIRA_PROJECT_KEY}" to all JQL queries unless specifically told to search across all projects
+//       2. Return ONLY the JQL query, nothing else. No explanations or additional text.
+//       3. ALWAYS use double quotes for field values containing spaces
+//       4. NEVER use commas outside of parentheses except in IN clauses - use AND or OR instead
+//       5. NEVER use "LIMIT" in JQL - if quantity limiting is needed, use ORDER BY instead
+//       6. For queries about recent/latest items, use "ORDER BY updated DESC" or "ORDER BY created DESC"
+//       7. Ensure all special characters and reserved words are properly escaped
+//       8. For multiple values in an IN statement, format like: status IN ("Open", "In Progress")
+//       9. Avoid complex syntax with unclear operators
+//       10. Avoid any syntax that might cause this error: "Expecting operator but got ','"
+//       11. If the query asks about a specific person, include 'assignee ~ "PersonName"' in your JQL
+//       12. If the query mentions status, always include a status condition like 'status = "In Progress"'
+//       13. If any part of the query is unclear, prefer broader queries that return more results rather than potentially missing relevant issues
       
-      Common valid JQL patterns:
-      - status = "In Progress"
-      - assignee = "John Doe"
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND status IN ("Open", "In Progress")
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND priority = "High" AND assignee IS NOT EMPTY
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND labels = "frontend" AND status != "Done"
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND created >= -7d
+//       Common valid JQL patterns:
+//       - status = "In Progress"
+//       - assignee = "John Doe"
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND status IN ("Open", "In Progress")
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND priority = "High" AND assignee IS NOT EMPTY
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND labels = "frontend" AND status != "Done"
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND created >= -7d
       
-      FORBIDDEN PATTERNS:
-      - AVOID: status = open, assignee = john  ← NO COMMAS between conditions, missing quotes
-      - AVOID: status = "open", updated = "2023-01-01"  ← NO COMMAS between conditions
-      - AVOID: project, status = open  ← Invalid syntax, missing operators
-      - AVOID: LIMIT 5  ← Never use LIMIT keyword
-      - AVOID: ORDER BY status DESC LIMIT 10  ← Never use LIMIT keyword
+//       FORBIDDEN PATTERNS:
+//       - AVOID: status = open, assignee = john  ← NO COMMAS between conditions, missing quotes
+//       - AVOID: status = "open", updated = "2023-01-01"  ← NO COMMAS between conditions
+//       - AVOID: project, status = open  ← Invalid syntax, missing operators
+//       - AVOID: LIMIT 5  ← Never use LIMIT keyword
+//       - AVOID: ORDER BY status DESC LIMIT 10  ← Never use LIMIT keyword
       
-      CORRECT PATTERNS:
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND status = "Open" AND assignee = "John"
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND (status = "Open" OR status = "In Progress")
-      - project = "${process.env.JIRA_PROJECT_KEY}" AND status IN ("Open", "In Progress")
+//       CORRECT PATTERNS:
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND status = "Open" AND assignee = "John"
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND (status = "Open" OR status = "In Progress")
+//       - project = "${process.env.JIRA_PROJECT_KEY}" AND status IN ("Open", "In Progress")
       
-      Generate a valid JQL query based on the user's intent: ${intent} and query: "${query}".
-    `;
+//       Generate a valid JQL query based on the user's intent: ${intent} and query: "${query}".
+//     `;
 
-    // Use AI to generate the JQL
-    const response = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Convert this to precise JQL: "${query}"` },
-      ],
-      temperature: 0.1, // Lower temperature for consistent results
-    });
+//     // Use AI to generate the JQL
+//     const response = await openai.chat.completions.create({
+//       model: "gpt-4",
+//       messages: [
+//         { role: "system", content: systemPrompt },
+//         { role: "user", content: `Convert this to precise JQL: "${query}"` },
+//       ],
+//       temperature: 0.1, // Lower temperature for consistent results
+//     });
 
-    let jqlQuery = response.choices[0].message.content.trim();
-    console.log("AI-Generated JQL:", jqlQuery);
+//     let jqlQuery = response.choices[0].message.content.trim();
+//     console.log("AI-Generated JQL:", jqlQuery);
 
-    // Apply safety checks and sanitization to the AI-generated JQL
-    const sanitizedJQL = sanitizeJQL(jqlQuery);
+//     // Apply safety checks and sanitization to the AI-generated JQL
+//     const sanitizedJQL = sanitizeJql(jqlQuery);
 
-    const endTime = Date.now();
-    console.log(`JQL generation took ${endTime - startTime}ms`);
+//     const endTime = Date.now();
+//     console.log(`JQL generation took ${endTime - startTime}ms`);
 
-    return sanitizedJQL;
-  } catch (error) {
-    console.error("Error in primary JQL generation:", error);
+//     return sanitizedJQL;
+//   } catch (error) {
+//     console.error("Error in primary JQL generation:", error);
 
-    try {
-      // Try a simplified AI approach with more constraints
-      console.log("Attempting simplified AI JQL generation...");
+//     try {
+//       // Try a simplified AI approach with more constraints
+//       console.log("Attempting simplified AI JQL generation...");
 
-      const simplifiedPrompt = `
-        Generate a simple, safe JQL query for Jira based on this query: "${query}"
-        The query intent is: ${intent}
+//       const simplifiedPrompt = `
+//         Generate a simple, safe JQL query for Jira based on this query: "${query}"
+//         The query intent is: ${intent}
         
-        REQUIREMENTS:
-        - Must start with project = "${process.env.JIRA_PROJECT_KEY}"
-        - Use only simple conditions with AND
-        - Stick to basic fields: status, assignee, priority
-        - ONLY output the JQL query, nothing else
-        - Never use commas between conditions
-        - Always use double quotes around values
-      `;
+//         REQUIREMENTS:
+//         - Must start with project = "${process.env.JIRA_PROJECT_KEY}"
+//         - Use only simple conditions with AND
+//         - Stick to basic fields: status, assignee, priority
+//         - ONLY output the JQL query, nothing else
+//         - Never use commas between conditions
+//         - Always use double quotes around values
+//       `;
 
-      const simplifiedResponse = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [{ role: "system", content: simplifiedPrompt }],
-        temperature: 0.1,
-        max_tokens: 100,
-      });
+//       const simplifiedResponse = await openai.chat.completions.create({
+//         model: "gpt-4",
+//         messages: [{ role: "system", content: simplifiedPrompt }],
+//         temperature: 0.1,
+//         max_tokens: 100,
+//       });
 
-      const simplifiedJQL = simplifiedResponse.choices[0].message.content.trim();
-      console.log("Simplified AI JQL generated:", simplifiedJQL);
+//       const simplifiedJQL = simplifiedResponse.choices[0].message.content.trim();
+//       console.log("Simplified AI JQL generated:", simplifiedJQL);
 
-      // Double-check with sanitization
-      return sanitizeJQL(simplifiedJQL);
-    } catch (secondError) {
-      console.error("Error in simplified JQL generation:", secondError);
+//       // Double-check with sanitization
+//       return sanitizeJql(simplifiedJQL);
+//     } catch (secondError) {
+//       console.error("Error in simplified JQL generation:", secondError);
 
-      // Final fallback to template-based JQL
-      console.log("Falling back to template-based JQL generation...");
-      return fallbackGenerateJQL(query, intent);
-    }
-  }
-}
+//       // Final fallback to template-based JQL
+//       console.log("Falling back to template-based JQL generation...");
+//       return fallbackGenerateJQL(query, intent);
+//     }
+//   }
+// }
 
 // Helper function to extract useful entities from query for JQL generation
 function extractEntitiesFromQuery(query) {
