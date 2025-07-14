@@ -30,10 +30,7 @@ const PROJECT_KEY = process.env.JIRA_PROJECT_KEY || "IHKA"; // Your project key
 const CONFLUENCE_MAIN_PAGE_ID = process.env.CONFLUENCE_MAIN_PAGE_ID || "4624646162";
 const CONFLUENCE_AUTO_INDEX = process.env.CONFLUENCE_AUTO_INDEX === "true";
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+
 
 // CORS setup
 app.use(cors());
