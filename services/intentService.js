@@ -1,4 +1,4 @@
-import { openai } from "../config/openaiConfig";
+import { openai } from "../config/openaiConfig.js";
 
 export async function analyzeQueryIntent(query) {
   // Store original query for logging
