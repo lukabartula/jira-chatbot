@@ -6,10 +6,12 @@ import { OpenAI } from "openai";
 import { openai } from "./config/openaiConfig.js";
 import * as cheerio from "cheerio";
 import { safeJqlTemplates } from "./config/jiraConfig.js";
-import { fallbackGenerateJQL, generateJQL } from "./services/jiraService.js";
+import { fallbackGenerateJQL, generateJQL, getProjectStatusOverview, getMostRecentTaskDetails } from "./services/jiraService.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { URL } from "url";
+import { analyzeQueryIntent } from "./services/intentService.js";
+import { getConversationMemory, updateConversationMemory, conversationMemory } from "./memory/conversationMemory.js";
 import { 
   createJiraLink,
   createJiraFilterLink,
@@ -107,314 +109,314 @@ console.log("process.env.JIRA_PROJECT_KEY", process.env.JIRA_PROJECT_KEY);
 // }
 
 // Enhanced intent analysis for more precise query understanding
-async function analyzeQueryIntent(query) {
-  // Store original query for logging
-  const originalQuery = query;
+// async function analyzeQueryIntent(query) {
+//   // Store original query for logging
+//   const originalQuery = query;
 
-  // Preprocess the query
-  query = query.trim().toLowerCase();
+//   // Preprocess the query
+//   query = query.trim().toLowerCase();
 
-  // First check for exact pattern matches we can directly classify with high confidence
-  if (/sprint|current sprint|active sprint|sprint status|sprint board/i.test(query)) {
-    console.log(`Direct match: "${originalQuery}" -> SPRINT`);
-    return "SPRINT";
-  }
+//   // First check for exact pattern matches we can directly classify with high confidence
+//   if (/sprint|current sprint|active sprint|sprint status|sprint board/i.test(query)) {
+//     console.log(`Direct match: "${originalQuery}" -> SPRINT`);
+//     return "SPRINT";
+//   }
 
-  if (/^(?:hi|hello|hey|hi there|greetings|how are you|what can you do|what do you do|help me|how do you work)/i.test(query.trim())) {
-    console.log(`Direct match: "${originalQuery}" -> GREETING`);
-    return "GREETING";
-  }
+//   if (/^(?:hi|hello|hey|hi there|greetings|how are you|what can you do|what do you do|help me|how do you work)/i.test(query.trim())) {
+//     console.log(`Direct match: "${originalQuery}" -> GREETING`);
+//     return "GREETING";
+//   }
 
-  // Check for issue type related queries
-  if (/(?:work|issue|task)\s+types?|types? of (?:work|issue|task)|(?:what|which) (?:work|issue|task) types?/i.test(query)) {
-    console.log(`Direct match: "${originalQuery}" -> ISSUE_TYPES`);
-    return "ISSUE_TYPES";
-  }
+//   // Check for issue type related queries
+//   if (/(?:work|issue|task)\s+types?|types? of (?:work|issue|task)|(?:what|which) (?:work|issue|task) types?/i.test(query)) {
+//     console.log(`Direct match: "${originalQuery}" -> ISSUE_TYPES`);
+//     return "ISSUE_TYPES";
+//   }
 
-  const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i");
-  if (issueKeyPattern.test(query) && /^(?:show|tell|get|what is|about) ${process.env.JIRA_PROJECT_KEY}-\d+$/i.test(query.trim())) {
-    console.log(`Direct match: "${originalQuery}" -> TASK_DETAILS`);
-    return "TASK_DETAILS";
-  }
+//   const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i");
+//   if (issueKeyPattern.test(query) && /^(?:show|tell|get|what is|about) ${process.env.JIRA_PROJECT_KEY}-\d+$/i.test(query.trim())) {
+//     console.log(`Direct match: "${originalQuery}" -> TASK_DETAILS`);
+//     return "TASK_DETAILS";
+//   }
 
-  // Common pattern sets with confidence ranking for precise intent detection
-  const intentPatterns = [
-    {
-      intent: "PROJECT_STATUS",
-      highConfidencePatterns: [
-        /^(?:what|how) is (?:the |our )?project(?:'s)? (?:status|health|progress)/i,
-        /^(?:give|show) me (?:the |a )?project (?:status|overview|summary|health)/i,
-        /^project (?:status|health|overview|summary)$/i,
-      ],
-      mediumConfidencePatterns: [/status|progress|overview|health|how is the project/i],
-    },
-    {
-      intent: "TIMELINE",
-      highConfidencePatterns: [
-        /^(?:what|show) is (?:the |our )?(?:timeline|roadmap|schedule|calendar)/i,
-        /^(?:when|what) is (?:due|upcoming|planned|scheduled)/i,
-        /^(?:show|display) (?:the |our )?(?:timeline|roadmap|schedule|deadlines)/i,
-      ],
-      mediumConfidencePatterns: [/timeline|roadmap|schedule|deadline|due date|when|calendar/i],
-    },
-    {
-      intent: "BLOCKERS",
-      highConfidencePatterns: [
-        /^(?:what|any|show) (?:is|are) (?:blocking|blockers|impediments|obstacles)/i,
-        /^(?:show|list|find|get) (?:all |the |)?blockers/i,
-        /^(?:what|anything) (?:preventing|stopping|holding up) (?:the |our )?(?:progress|project|work)/i,
-      ],
-      mediumConfidencePatterns: [/block|blocker|blocking|stuck|impediment|obstacle|risk|critical|prevent/i],
-    },
-    {
-      intent: "WORKLOAD",
-      highConfidencePatterns: [
-        /^(?:what|how) is (?:the |our )?(?:team'?s?|team member'?s?) (?:workload|capacity|bandwidth)/i,
-        /^(?:who|which team member) (?:has|is) (?:too much|overloaded|busy|free|available)/i,
-        /^(?:show|display) (?:the |team |)?workload/i,
-      ],
-      mediumConfidencePatterns: [/workload|capacity|bandwidth|overloaded|busy|who.*working|team.* work/i],
-    },
-    {
-      intent: "ASSIGNED_TASKS",
-      highConfidencePatterns: [
-        /^(?:what|which|show) (?:tasks?|issues?|tickets?) (?:is|are) (?:assigned to|owned by) ([a-z]+)/i,
-        /^(?:what|show me) (?:is|are) ([a-z]+) working on/i,
-        /^(?:who|show) (?:is|are) (?:responsible for|assigned to|working on)/i,
-      ],
-      mediumConfidencePatterns: [/assign|working on|responsible|owner|who is|who's/i],
-    },
-    {
-      intent: "TASK_LIST",
-      highConfidencePatterns: [
-        /^(?:show|list|find|get) (?:all |the |)?(?:open|active|current|closed|completed|done|high priority) (?:tasks|issues|tickets)/i,
-        /^(?:what|which|list|get|show) (?:tasks|issues|tickets) (?:are|have)/i,
-        /^(?:show|list|find|get|what is|which is|what are|which are) (?:the |all |a )?(?:open|active|current|closed|completed|done|high priority|highest priority) (?:tasks|issues|tickets)/i,
-        /^(?:show|list|find|get|what is|which is) (?:the |a )?(?:open|active|current|closed|completed|done|high priority) (?:task|issue|ticket)/i,
-      ],
-      mediumConfidencePatterns: [/list|show|find|search|get|all|open|closed|high|task|issue|ticket/i],
-    },
-    {
-      intent: "TASK_DETAILS",
-      highConfidencePatterns: [
-        /^(?:tell|show|describe|what) (?:me |is |)?(?:about |details (?:for|about) )?${process.env.JIRA_PROJECT_KEY}-\d+/i,
-        /^${process.env.JIRA_PROJECT_KEY}-\d+/i,
-      ],
-      mediumConfidencePatterns: [new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i")],
-    },
-    {
-      intent: "COMMENTS",
-      highConfidencePatterns: [
-        /^(?:show|get|what|any) (?:comments|updates|activity) (?:on|for|about) ${process.env.JIRA_PROJECT_KEY}-\d+/i,
-        /^(?:what|who) (?:did|has) (?:someone|anyone|people|team) (?:say|comment|mention|note) (?:about|on|regarding)/i,
-      ],
-      mediumConfidencePatterns: [/comment|said|mentioned|update|notes/i],
-    },
-    {
-      intent: "SPRINT",
-      highConfidencePatterns: [
-        /^(?:how|what) is (?:the |our |current )?sprint/i,
-        /^(?:show|display|current) sprint/i,
-        /^sprint (?:status|progress|overview|details)/i,
-      ],
-      mediumConfidencePatterns: [/sprint/i],
-    },
-  ];
+//   // Common pattern sets with confidence ranking for precise intent detection
+//   const intentPatterns = [
+//     {
+//       intent: "PROJECT_STATUS",
+//       highConfidencePatterns: [
+//         /^(?:what|how) is (?:the |our )?project(?:'s)? (?:status|health|progress)/i,
+//         /^(?:give|show) me (?:the |a )?project (?:status|overview|summary|health)/i,
+//         /^project (?:status|health|overview|summary)$/i,
+//       ],
+//       mediumConfidencePatterns: [/status|progress|overview|health|how is the project/i],
+//     },
+//     {
+//       intent: "TIMELINE",
+//       highConfidencePatterns: [
+//         /^(?:what|show) is (?:the |our )?(?:timeline|roadmap|schedule|calendar)/i,
+//         /^(?:when|what) is (?:due|upcoming|planned|scheduled)/i,
+//         /^(?:show|display) (?:the |our )?(?:timeline|roadmap|schedule|deadlines)/i,
+//       ],
+//       mediumConfidencePatterns: [/timeline|roadmap|schedule|deadline|due date|when|calendar/i],
+//     },
+//     {
+//       intent: "BLOCKERS",
+//       highConfidencePatterns: [
+//         /^(?:what|any|show) (?:is|are) (?:blocking|blockers|impediments|obstacles)/i,
+//         /^(?:show|list|find|get) (?:all |the |)?blockers/i,
+//         /^(?:what|anything) (?:preventing|stopping|holding up) (?:the |our )?(?:progress|project|work)/i,
+//       ],
+//       mediumConfidencePatterns: [/block|blocker|blocking|stuck|impediment|obstacle|risk|critical|prevent/i],
+//     },
+//     {
+//       intent: "WORKLOAD",
+//       highConfidencePatterns: [
+//         /^(?:what|how) is (?:the |our )?(?:team'?s?|team member'?s?) (?:workload|capacity|bandwidth)/i,
+//         /^(?:who|which team member) (?:has|is) (?:too much|overloaded|busy|free|available)/i,
+//         /^(?:show|display) (?:the |team |)?workload/i,
+//       ],
+//       mediumConfidencePatterns: [/workload|capacity|bandwidth|overloaded|busy|who.*working|team.* work/i],
+//     },
+//     {
+//       intent: "ASSIGNED_TASKS",
+//       highConfidencePatterns: [
+//         /^(?:what|which|show) (?:tasks?|issues?|tickets?) (?:is|are) (?:assigned to|owned by) ([a-z]+)/i,
+//         /^(?:what|show me) (?:is|are) ([a-z]+) working on/i,
+//         /^(?:who|show) (?:is|are) (?:responsible for|assigned to|working on)/i,
+//       ],
+//       mediumConfidencePatterns: [/assign|working on|responsible|owner|who is|who's/i],
+//     },
+//     {
+//       intent: "TASK_LIST",
+//       highConfidencePatterns: [
+//         /^(?:show|list|find|get) (?:all |the |)?(?:open|active|current|closed|completed|done|high priority) (?:tasks|issues|tickets)/i,
+//         /^(?:what|which|list|get|show) (?:tasks|issues|tickets) (?:are|have)/i,
+//         /^(?:show|list|find|get|what is|which is|what are|which are) (?:the |all |a )?(?:open|active|current|closed|completed|done|high priority|highest priority) (?:tasks|issues|tickets)/i,
+//         /^(?:show|list|find|get|what is|which is) (?:the |a )?(?:open|active|current|closed|completed|done|high priority) (?:task|issue|ticket)/i,
+//       ],
+//       mediumConfidencePatterns: [/list|show|find|search|get|all|open|closed|high|task|issue|ticket/i],
+//     },
+//     {
+//       intent: "TASK_DETAILS",
+//       highConfidencePatterns: [
+//         /^(?:tell|show|describe|what) (?:me |is |)?(?:about |details (?:for|about) )?${process.env.JIRA_PROJECT_KEY}-\d+/i,
+//         /^${process.env.JIRA_PROJECT_KEY}-\d+/i,
+//       ],
+//       mediumConfidencePatterns: [new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i")],
+//     },
+//     {
+//       intent: "COMMENTS",
+//       highConfidencePatterns: [
+//         /^(?:show|get|what|any) (?:comments|updates|activity) (?:on|for|about) ${process.env.JIRA_PROJECT_KEY}-\d+/i,
+//         /^(?:what|who) (?:did|has) (?:someone|anyone|people|team) (?:say|comment|mention|note) (?:about|on|regarding)/i,
+//       ],
+//       mediumConfidencePatterns: [/comment|said|mentioned|update|notes/i],
+//     },
+//     {
+//       intent: "SPRINT",
+//       highConfidencePatterns: [
+//         /^(?:how|what) is (?:the |our |current )?sprint/i,
+//         /^(?:show|display|current) sprint/i,
+//         /^sprint (?:status|progress|overview|details)/i,
+//       ],
+//       mediumConfidencePatterns: [/sprint/i],
+//     },
+//   ];
 
-  // Try to match against high confidence patterns first
-  for (const patternSet of intentPatterns) {
-    for (const pattern of patternSet.highConfidencePatterns) {
-      if (pattern.test(query)) {
-        console.log(`High confidence match: "${originalQuery}" -> ${patternSet.intent}`);
-        return patternSet.intent;
-      }
-    }
-  }
+//   // Try to match against high confidence patterns first
+//   for (const patternSet of intentPatterns) {
+//     for (const pattern of patternSet.highConfidencePatterns) {
+//       if (pattern.test(query)) {
+//         console.log(`High confidence match: "${originalQuery}" -> ${patternSet.intent}`);
+//         return patternSet.intent;
+//       }
+//     }
+//   }
 
-  // Then try medium confidence patterns
-  let matchedIntents = [];
-  for (const patternSet of intentPatterns) {
-    for (const pattern of patternSet.mediumConfidencePatterns) {
-      if (pattern.test(query)) {
-        matchedIntents.push(patternSet.intent);
-        break; // Only add each intent once
-      }
-    }
-  }
+//   // Then try medium confidence patterns
+//   let matchedIntents = [];
+//   for (const patternSet of intentPatterns) {
+//     for (const pattern of patternSet.mediumConfidencePatterns) {
+//       if (pattern.test(query)) {
+//         matchedIntents.push(patternSet.intent);
+//         break; // Only add each intent once
+//       }
+//     }
+//   }
 
-  // If we have one match, return it
-  if (matchedIntents.length === 1) {
-    console.log(`Medium confidence match: "${originalQuery}" -> ${matchedIntents[0]}`);
-    return matchedIntents[0];
-  }
+//   // If we have one match, return it
+//   if (matchedIntents.length === 1) {
+//     console.log(`Medium confidence match: "${originalQuery}" -> ${matchedIntents[0]}`);
+//     return matchedIntents[0];
+//   }
 
-  // If we have multiple matches, try using AI to disambiguate
-  if (matchedIntents.length > 1) {
-    try {
-      console.log(`Multiple possible intents for "${originalQuery}": ${matchedIntents.join(", ")}. Using AI to disambiguate.`);
+//   // If we have multiple matches, try using AI to disambiguate
+//   if (matchedIntents.length > 1) {
+//     try {
+//       console.log(`Multiple possible intents for "${originalQuery}": ${matchedIntents.join(", ")}. Using AI to disambiguate.`);
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          {
-            role: "system",
-            content: `
-              You classify Jira-related questions into specific intent categories. 
-              Analyze the query carefully and return ONLY ONE of these categories:
+//       const response = await openai.chat.completions.create({
+//         model: "gpt-4",
+//         messages: [
+//           {
+//             role: "system",
+//             content: `
+//               You classify Jira-related questions into specific intent categories. 
+//               Analyze the query carefully and return ONLY ONE of these categories:
               
-              - PROJECT_STATUS: Questions about overall project health, progress, metrics
-                Examples: "How's the project going?", "What's our current status?", "Give me a project overview"
+//               - PROJECT_STATUS: Questions about overall project health, progress, metrics
+//                 Examples: "How's the project going?", "What's our current status?", "Give me a project overview"
                 
-              - TASK_LIST: Requests for lists of tasks matching certain criteria
-                Examples: "Show me all open bugs", "List the high priority tasks", "What tasks are due this week?"
+//               - TASK_LIST: Requests for lists of tasks matching certain criteria
+//                 Examples: "Show me all open bugs", "List the high priority tasks", "What tasks are due this week?"
                 
-              - ASSIGNED_TASKS: Questions about who is working on what
-                Examples: "What is John working on?", "Show me Sarah's tasks", "Who's responsible for the login feature?"
+//               - ASSIGNED_TASKS: Questions about who is working on what
+//                 Examples: "What is John working on?", "Show me Sarah's tasks", "Who's responsible for the login feature?"
                 
-              - TASK_DETAILS: Questions about specific tickets or issues
-                Examples: "Tell me about PROJ-123", "What's the status of the payment feature?", "Who's working on the homepage redesign?"
+//               - TASK_DETAILS: Questions about specific tickets or issues
+//                 Examples: "Tell me about PROJ-123", "What's the status of the payment feature?", "Who's working on the homepage redesign?"
                 
-              - BLOCKERS: Questions about impediments or high-priority issues
-                Examples: "What's blocking us?", "Are there any critical issues?", "What should we focus on fixing first?"
+//               - BLOCKERS: Questions about impediments or high-priority issues
+//                 Examples: "What's blocking us?", "Are there any critical issues?", "What should we focus on fixing first?"
                 
-              - TIMELINE: Questions about deadlines, due dates, or project schedule
-                Examples: "What's due this week?", "When will feature X be done?", "Show me upcoming deadlines"
+//               - TIMELINE: Questions about deadlines, due dates, or project schedule
+//                 Examples: "What's due this week?", "When will feature X be done?", "Show me upcoming deadlines"
                 
-              - COMMENTS: Questions looking for updates, comments, or recent activity
-                Examples: "Any updates on PROJ-123?", "What did John say about the login issue?", "Latest comments on the API task?"
+//               - COMMENTS: Questions looking for updates, comments, or recent activity
+//                 Examples: "Any updates on PROJ-123?", "What did John say about the login issue?", "Latest comments on the API task?"
                 
-              - WORKLOAD: Questions about team capacity and individual workloads
-                Examples: "Who has the most tasks?", "Is anyone overloaded?", "How's the team's capacity looking?"
+//               - WORKLOAD: Questions about team capacity and individual workloads
+//                 Examples: "Who has the most tasks?", "Is anyone overloaded?", "How's the team's capacity looking?"
                 
-              - SPRINT: Questions about sprint status and activity
-                Examples: "How's the current sprint?", "What's in this sprint?", "Sprint progress"
+//               - SPRINT: Questions about sprint status and activity
+//                 Examples: "How's the current sprint?", "What's in this sprint?", "Sprint progress"
 
-              - ISSUE_TYPES: Questions about the types of work items in the project
-                Examples: "What work types exist in the project?", "Show me the issue types", "What kind of tasks do we have?"
+//               - ISSUE_TYPES: Questions about the types of work items in the project
+//                 Examples: "What work types exist in the project?", "Show me the issue types", "What kind of tasks do we have?"
                 
-              - GENERAL: General questions that don't fit other categories
-                Examples: "Help me with Jira", "What can you do?", "How does this work?"
+//               - GENERAL: General questions that don't fit other categories
+//                 Examples: "Help me with Jira", "What can you do?", "How does this work?"
                 
-              - CONVERSATION: Follow-up questions, clarifications, or conversational exchanges
-                Examples: "Can you explain more?", "Thanks for that info", "That's not what I meant"
+//               - CONVERSATION: Follow-up questions, clarifications, or conversational exchanges
+//                 Examples: "Can you explain more?", "Thanks for that info", "That's not what I meant"
               
-              The system has already identified these as potential intents: ${matchedIntents.join(", ")}
-              Please select the MOST APPROPRIATE intent from these options only. Return ONLY the intent name.
-            `,
-          },
-          { role: "user", content: query },
-        ],
-        temperature: 0.1,
-      });
+//               The system has already identified these as potential intents: ${matchedIntents.join(", ")}
+//               Please select the MOST APPROPRIATE intent from these options only. Return ONLY the intent name.
+//             `,
+//           },
+//           { role: "user", content: query },
+//         ],
+//         temperature: 0.1,
+//       });
 
-      const selectedIntent = response.choices[0].message.content.trim();
+//       const selectedIntent = response.choices[0].message.content.trim();
 
-      // Make sure the AI returned one of our valid intents
-      if (matchedIntents.includes(selectedIntent)) {
-        console.log(`AI disambiguated: "${originalQuery}" -> ${selectedIntent}`);
-        return selectedIntent;
-      } else {
-        console.log(`AI returned invalid intent: ${selectedIntent}. Falling back to first matched intent.`);
-        return matchedIntents[0];
-      }
-    } catch (error) {
-      console.error("Error using AI to disambiguate intent:", error);
-      // In case of error, return the first matched intent
-      console.log(`Falling back to first matched intent: "${originalQuery}" -> ${matchedIntents[0]}`);
-      return matchedIntents[0];
-    }
-  }
+//       // Make sure the AI returned one of our valid intents
+//       if (matchedIntents.includes(selectedIntent)) {
+//         console.log(`AI disambiguated: "${originalQuery}" -> ${selectedIntent}`);
+//         return selectedIntent;
+//       } else {
+//         console.log(`AI returned invalid intent: ${selectedIntent}. Falling back to first matched intent.`);
+//         return matchedIntents[0];
+//       }
+//     } catch (error) {
+//       console.error("Error using AI to disambiguate intent:", error);
+//       // In case of error, return the first matched intent
+//       console.log(`Falling back to first matched intent: "${originalQuery}" -> ${matchedIntents[0]}`);
+//       return matchedIntents[0];
+//     }
+//   }
 
-  // If we still don't have a match, try AI for the full query
-  try {
-    console.log(`No pattern matches for "${originalQuery}". Using AI for full intent analysis.`);
+//   // If we still don't have a match, try AI for the full query
+//   try {
+//     console.log(`No pattern matches for "${originalQuery}". Using AI for full intent analysis.`);
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "system",
-          content: `
-            You classify Jira-related questions into specific intent categories. 
-            Analyze the query carefully and return ONLY ONE of these categories:
+//     const response = await openai.chat.completions.create({
+//       model: "gpt-4",
+//       messages: [
+//         {
+//           role: "system",
+//           content: `
+//             You classify Jira-related questions into specific intent categories. 
+//             Analyze the query carefully and return ONLY ONE of these categories:
             
-            - PROJECT_STATUS: Questions about overall project health, progress, metrics
-              Examples: "How's the project going?", "What's our current status?", "Give me a project overview"
+//             - PROJECT_STATUS: Questions about overall project health, progress, metrics
+//               Examples: "How's the project going?", "What's our current status?", "Give me a project overview"
               
-            - TASK_LIST: Requests for lists of tasks matching certain criteria
-              Examples: "Show me all open bugs", "List the high priority tasks", "What tasks are due this week?"
+//             - TASK_LIST: Requests for lists of tasks matching certain criteria
+//               Examples: "Show me all open bugs", "List the high priority tasks", "What tasks are due this week?"
               
-            - ASSIGNED_TASKS: Questions about who is working on what
-              Examples: "What is John working on?", "Show me Sarah's tasks", "Who's responsible for the login feature?"
+//             - ASSIGNED_TASKS: Questions about who is working on what
+//               Examples: "What is John working on?", "Show me Sarah's tasks", "Who's responsible for the login feature?"
               
-            - TASK_DETAILS: Questions about specific tickets or issues
-              Examples: "Tell me about PROJ-123", "What's the status of the payment feature?", "Who's working on the homepage redesign?"
+//             - TASK_DETAILS: Questions about specific tickets or issues
+//               Examples: "Tell me about PROJ-123", "What's the status of the payment feature?", "Who's working on the homepage redesign?"
               
-            - BLOCKERS: Questions about impediments or high-priority issues
-              Examples: "What's blocking us?", "Are there any critical issues?", "What should we focus on fixing first?"
+//             - BLOCKERS: Questions about impediments or high-priority issues
+//               Examples: "What's blocking us?", "Are there any critical issues?", "What should we focus on fixing first?"
               
-            - TIMELINE: Questions about deadlines, due dates, or project schedule
-              Examples: "What's due this week?", "When will feature X be done?", "Show me upcoming deadlines"
+//             - TIMELINE: Questions about deadlines, due dates, or project schedule
+//               Examples: "What's due this week?", "When will feature X be done?", "Show me upcoming deadlines"
               
-            - COMMENTS: Questions looking for updates, comments, or recent activity
-              Examples: "Any updates on PROJ-123?", "What did John say about the login issue?", "Latest comments on the API task?"
+//             - COMMENTS: Questions looking for updates, comments, or recent activity
+//               Examples: "Any updates on PROJ-123?", "What did John say about the login issue?", "Latest comments on the API task?"
               
-            - WORKLOAD: Questions about team capacity and individual workloads
-              Examples: "Who has the most tasks?", "Is anyone overloaded?", "How's the team's capacity looking?"
+//             - WORKLOAD: Questions about team capacity and individual workloads
+//               Examples: "Who has the most tasks?", "Is anyone overloaded?", "How's the team's capacity looking?"
               
-            - SPRINT: Questions about sprint status and activity
-              Examples: "How's the current sprint?", "What's in this sprint?", "Sprint progress"
+//             - SPRINT: Questions about sprint status and activity
+//               Examples: "How's the current sprint?", "What's in this sprint?", "Sprint progress"
 
-            - ISSUE_TYPES: Questions about the types of work items in the project
-              Examples: "What work types exist in the project?", "Show me the issue types", "What kind of tasks do we have?"
+//             - ISSUE_TYPES: Questions about the types of work items in the project
+//               Examples: "What work types exist in the project?", "Show me the issue types", "What kind of tasks do we have?"
               
-            - GENERAL: General questions that don't fit other categories
-              Examples: "Help me with Jira", "What can you do?", "How does this work?"
+//             - GENERAL: General questions that don't fit other categories
+//               Examples: "Help me with Jira", "What can you do?", "How does this work?"
               
-            - CONVERSATION: Follow-up questions, clarifications, or conversational exchanges
-              Examples: "Can you explain more?", "Thanks for that info", "That's not what I meant"
-          `,
-        },
-        { role: "user", content: query },
-      ],
-      temperature: 0.1,
-    });
+//             - CONVERSATION: Follow-up questions, clarifications, or conversational exchanges
+//               Examples: "Can you explain more?", "Thanks for that info", "That's not what I meant"
+//           `,
+//         },
+//         { role: "user", content: query },
+//       ],
+//       temperature: 0.1,
+//     });
 
-    const aiIntent = response.choices[0].message.content.trim();
-    console.log(`AI intent analysis: "${originalQuery}" -> ${aiIntent}`);
-    return aiIntent;
-  } catch (error) {
-    console.error("Error analyzing query intent with AI:", error);
+//     const aiIntent = response.choices[0].message.content.trim();
+//     console.log(`AI intent analysis: "${originalQuery}" -> ${aiIntent}`);
+//     return aiIntent;
+//   } catch (error) {
+//     console.error("Error analyzing query intent with AI:", error);
 
-    // Ultimate fallback: keyword-based detection
-    console.log(`Falling back to keyword-based detection for "${originalQuery}"`);
+//     // Ultimate fallback: keyword-based detection
+//     console.log(`Falling back to keyword-based detection for "${originalQuery}"`);
 
-    // NEW: Check for issue type related queries in fallback
-    if (/(?:work|issue|task)\s+types?|types? of (?:work|issue|task)/i.test(query)) {
-      return "ISSUE_TYPES";
-    } else if (/timeline|roadmap|schedule|deadline|due date|what.* due|calendar|when/i.test(query)) {
-      return "TIMELINE";
-    } else if (/block|blocker|blocking|stuck|impediment|obstacle|risk|critical/i.test(query)) {
-      return "BLOCKERS";
-    } else if (/assign|working on|responsible|owner|who is|who's/i.test(query)) {
-      return "ASSIGNED_TASKS";
-    } else if (/status|progress|update|how is|how's|overview/i.test(query)) {
-      return "PROJECT_STATUS";
-    } else if (/list|show|find|search|get|all/i.test(query)) {
-      return "TASK_LIST";
-    } else if (/comment|said|mentioned|update|notes/i.test(query)) {
-      return "COMMENTS";
-    } else if (/workload|capacity|bandwidth|overloaded|busy/i.test(query)) {
-      return "WORKLOAD";
-    } else if (/sprint/i.test(query)) {
-      return "SPRINT";
-    } else if (issueKeyPattern.test(query)) {
-      return "TASK_DETAILS";
-    } else {
-      return "GENERAL";
-    }
-  }
-}
+//     // NEW: Check for issue type related queries in fallback
+//     if (/(?:work|issue|task)\s+types?|types? of (?:work|issue|task)/i.test(query)) {
+//       return "ISSUE_TYPES";
+//     } else if (/timeline|roadmap|schedule|deadline|due date|what.* due|calendar|when/i.test(query)) {
+//       return "TIMELINE";
+//     } else if (/block|blocker|blocking|stuck|impediment|obstacle|risk|critical/i.test(query)) {
+//       return "BLOCKERS";
+//     } else if (/assign|working on|responsible|owner|who is|who's/i.test(query)) {
+//       return "ASSIGNED_TASKS";
+//     } else if (/status|progress|update|how is|how's|overview/i.test(query)) {
+//       return "PROJECT_STATUS";
+//     } else if (/list|show|find|search|get|all/i.test(query)) {
+//       return "TASK_LIST";
+//     } else if (/comment|said|mentioned|update|notes/i.test(query)) {
+//       return "COMMENTS";
+//     } else if (/workload|capacity|bandwidth|overloaded|busy/i.test(query)) {
+//       return "WORKLOAD";
+//     } else if (/sprint/i.test(query)) {
+//       return "SPRINT";
+//     } else if (issueKeyPattern.test(query)) {
+//       return "TASK_DETAILS";
+//     } else {
+//       return "GENERAL";
+//     }
+//   }
+// }
 
 // Enhanced JQL generator with more nuanced query understanding and error recovery
 // async function generateJQL(query, intent) {
@@ -603,368 +605,368 @@ async function analyzeQueryIntent(query) {
 // }
 
 // Helper function to extract useful entities from query for JQL generation
-function extractEntitiesFromQuery(query) {
-  const entities = {
-    assignee: null,
-    priority: null,
-    status: null,
-    type: null,
-    timeframe: null,
-  };
+// function extractEntitiesFromQuery(query) {
+//   const entities = {
+//     assignee: null,
+//     priority: null,
+//     status: null,
+//     type: null,
+//     timeframe: null,
+//   };
 
-  // Extract assignee
-  const assigneeMatch = query.match(/assigned to ([\w\s]+)|([\w\s]+)'s (tasks|issues|workload)|by ([\w\s]+)/i);
-  if (assigneeMatch) {
-    entities.assignee =
-      (assigneeMatch[1] || assigneeMatch[2] || assigneeMatch[4])?.trim().replace(/\s{2,}/g, " ");
-  }
+//   // Extract assignee
+//   const assigneeMatch = query.match(/assigned to ([\w\s]+)|([\w\s]+)'s (tasks|issues|workload)|by ([\w\s]+)/i);
+//   if (assigneeMatch) {
+//     entities.assignee =
+//       (assigneeMatch[1] || assigneeMatch[2] || assigneeMatch[4])?.trim().replace(/\s{2,}/g, " ");
+//   }
 
-  // Extract priority
-  const priorityMatch = query.match(/priority (?:is |of |=)?\s*"?(high|highest|medium|low|lowest)"?/i);
-  if (priorityMatch) {
-    entities.priority = priorityMatch[1].charAt(0).toUpperCase() + priorityMatch[1].slice(1).toLowerCase();
-  }
+//   // Extract priority
+//   const priorityMatch = query.match(/priority (?:is |of |=)?\s*"?(high|highest|medium|low|lowest)"?/i);
+//   if (priorityMatch) {
+//     entities.priority = priorityMatch[1].charAt(0).toUpperCase() + priorityMatch[1].slice(1).toLowerCase();
+//   }
 
-  // Extract status
-  const statusMatch = query.match(/status (?:is |of |=)?\s*"?(open|in progress|done|closed|to do)"?/i);
-  if (statusMatch) {
-    entities.status = statusMatch[1].charAt(0).toUpperCase() + statusMatch[1].slice(1).toLowerCase();
+//   // Extract status
+//   const statusMatch = query.match(/status (?:is |of |=)?\s*"?(open|in progress|done|closed|to do)"?/i);
+//   if (statusMatch) {
+//     entities.status = statusMatch[1].charAt(0).toUpperCase() + statusMatch[1].slice(1).toLowerCase();
 
-    // Special case for "In Progress" to get capitalization right
-    if (entities.status.toLowerCase() === "in progress") {
-      entities.status = "In Progress";
-    }
-  }
+//     // Special case for "In Progress" to get capitalization right
+//     if (entities.status.toLowerCase() === "in progress") {
+//       entities.status = "In Progress";
+//     }
+//   }
 
-  // Extract issue type
-  const typeMatch = query.match(/type (?:is |of |=)?\s*"?(bug|story|task|epic)"?/i);
-  if (typeMatch) {
-    entities.type = typeMatch[1].charAt(0).toUpperCase() + typeMatch[1].slice(1).toLowerCase();
-  }
+//   // Extract issue type
+//   const typeMatch = query.match(/type (?:is |of |=)?\s*"?(bug|story|task|epic)"?/i);
+//   if (typeMatch) {
+//     entities.type = typeMatch[1].charAt(0).toUpperCase() + typeMatch[1].slice(1).toLowerCase();
+//   }
 
-  // Extract timeframe
-  if (/this week|current week/i.test(query)) {
-    entities.timeframe = "thisWeek";
-  } else if (/next week/i.test(query)) {
-    entities.timeframe = "nextWeek";
-  } else if (/this month|current month/i.test(query)) {
-    entities.timeframe = "thisMonth";
-  } else if (/overdue|late|past due/i.test(query)) {
-    entities.timeframe = "overdue";
-  } else if (/recent|latest|last/i.test(query)) {
-    entities.timeframe = "recent";
-  }
+//   // Extract timeframe
+//   if (/this week|current week/i.test(query)) {
+//     entities.timeframe = "thisWeek";
+//   } else if (/next week/i.test(query)) {
+//     entities.timeframe = "nextWeek";
+//   } else if (/this month|current month/i.test(query)) {
+//     entities.timeframe = "thisMonth";
+//   } else if (/overdue|late|past due/i.test(query)) {
+//     entities.timeframe = "overdue";
+//   } else if (/recent|latest|last/i.test(query)) {
+//     entities.timeframe = "recent";
+//   }
 
-  return entities;
-}
+//   return entities;
+// }
 
 // Special handler for most recently edited task
-async function getMostRecentTaskDetails(req, res, query, sessionId) {
-  try {
-    // Get the most recently updated task
-    const recentTaskResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
-      params: {
-        jql: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY updated DESC`,
-        maxResults: 1,
-        fields: "summary,status,assignee,priority,created,updated,duedate,comment,description",
-      },
-      auth,
-    });
+// async function getMostRecentTaskDetails(req, res, query, sessionId) {
+//   try {
+//     // Get the most recently updated task
+//     const recentTaskResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//       params: {
+//         jql: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY updated DESC`,
+//         maxResults: 1,
+//         fields: "summary,status,assignee,priority,created,updated,duedate,comment,description",
+//       },
+//       auth,
+//     });
 
-    if (recentTaskResponse.data && recentTaskResponse.data.issues && recentTaskResponse.data.issues.length > 0) {
-      const issue = recentTaskResponse.data.issues[0];
-      const status = issue.fields.status?.name || "Unknown";
-      const assignee = issue.fields.assignee?.displayName || "Unassigned";
-      const summary = issue.fields.summary || "No summary";
-      const priority = issue.fields.priority?.name || "Not set";
-      const created = new Date(issue.fields.created).toLocaleDateString();
-      const updated = new Date(issue.fields.updated).toLocaleDateString();
+//     if (recentTaskResponse.data && recentTaskResponse.data.issues && recentTaskResponse.data.issues.length > 0) {
+//       const issue = recentTaskResponse.data.issues[0];
+//       const status = issue.fields.status?.name || "Unknown";
+//       const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//       const summary = issue.fields.summary || "No summary";
+//       const priority = issue.fields.priority?.name || "Not set";
+//       const created = new Date(issue.fields.created).toLocaleDateString();
+//       const updated = new Date(issue.fields.updated).toLocaleDateString();
 
-      // Description handling
-      let description = "No description provided.";
-      if (issue.fields.description) {
-        if (typeof issue.fields.description === "string") {
-          description = issue.fields.description;
-        } else if (issue.fields.description.content) {
-          try {
-            description = extractTextFromADF(issue.fields.description);
-          } catch (e) {
-            description = "Description contains rich formatting that cannot be displayed in plain text.";
-          }
-        }
-      }
+//       // Description handling
+//       let description = "No description provided.";
+//       if (issue.fields.description) {
+//         if (typeof issue.fields.description === "string") {
+//           description = issue.fields.description;
+//         } else if (issue.fields.description.content) {
+//           try {
+//             description = extractTextFromADF(issue.fields.description);
+//           } catch (e) {
+//             description = "Description contains rich formatting that cannot be displayed in plain text.";
+//           }
+//         }
+//       }
 
-      // Comment handling
-      const comments = issue.fields.comment?.comments || [];
-      let commentMessage = "No comments found on this issue.";
-      if (comments.length > 0) {
-        const latestComment = comments[comments.length - 1];
-        const author = latestComment.author?.displayName || "Unknown";
-        const commentCreated = new Date(latestComment.created).toLocaleDateString();
-        let commentText = "";
+//       // Comment handling
+//       const comments = issue.fields.comment?.comments || [];
+//       let commentMessage = "No comments found on this issue.";
+//       if (comments.length > 0) {
+//         const latestComment = comments[comments.length - 1];
+//         const author = latestComment.author?.displayName || "Unknown";
+//         const commentCreated = new Date(latestComment.created).toLocaleDateString();
+//         let commentText = "";
 
-        if (typeof latestComment.body === "string") {
-          commentText = latestComment.body;
-        } else if (latestComment.body && latestComment.body.content) {
-          try {
-            commentText = extractTextFromADF(latestComment.body);
-          } catch (e) {
-            commentText = "Comment contains rich content that cannot be displayed in plain text.";
-          }
-        }
+//         if (typeof latestComment.body === "string") {
+//           commentText = latestComment.body;
+//         } else if (latestComment.body && latestComment.body.content) {
+//           try {
+//             commentText = extractTextFromADF(latestComment.body);
+//           } catch (e) {
+//             commentText = "Comment contains rich content that cannot be displayed in plain text.";
+//           }
+//         }
 
-        commentMessage = `**Latest comment** (by ${author} on ${commentCreated}):\n"${commentText}"`;
-      }
+//         commentMessage = `**Latest comment** (by ${author} on ${commentCreated}):\n"${commentText}"`;
+//       }
 
-      const formattedResponse =
-        `## ${createJiraLink(issue.key)}: ${summary} (Most Recently Updated)\n\n` +
-        `**Status**: ${status}\n` +
-        `**Priority**: ${priority}\n` +
-        `**Assignee**: ${assignee}\n` +
-        `**Created**: ${created}\n` +
-        `**Last Updated**: ${updated}\n\n` +
-        `### Description\n${description}\n\n` +
-        `### Latest Comment\n${commentMessage}`;
+//       const formattedResponse =
+//         `## ${createJiraLink(issue.key)}: ${summary} (Most Recently Updated)\n\n` +
+//         `**Status**: ${status}\n` +
+//         `**Priority**: ${priority}\n` +
+//         `**Assignee**: ${assignee}\n` +
+//         `**Created**: ${created}\n` +
+//         `**Last Updated**: ${updated}\n\n` +
+//         `### Description\n${description}\n\n` +
+//         `### Latest Comment\n${commentMessage}`;
 
-      // Store response in conversation memory
-      if (conversationMemory[sessionId]) {
-        conversationMemory[sessionId].lastResponse = formattedResponse;
-      }
+//       // Store response in conversation memory
+//       if (conversationMemory[sessionId]) {
+//         conversationMemory[sessionId].lastResponse = formattedResponse;
+//       }
 
-      if (jql) {
-        const jiraFilterLink = createJiraFilterLink(jql);
-        formattedResponse += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
-      }
+//       if (jql) {
+//         const jiraFilterLink = createJiraFilterLink(jql);
+//         formattedResponse += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
+//       }
 
-      return res.json({
-        message: formattedResponse,
-        rawData: issue,
-        meta: {
-          intent: "TASK_DETAILS",
-          issueKey: issue.key,
-        },
-      });
-    }
-    return null; // Continue with normal processing if no issues found
-  } catch (error) {
-    console.error("Error fetching most recent task:", error);
-    return null; // Continue with normal processing
-  }
-}
+//       return res.json({
+//         message: formattedResponse,
+//         rawData: issue,
+//         meta: {
+//           intent: "TASK_DETAILS",
+//           issueKey: issue.key,
+//         },
+//       });
+//     }
+//     return null; // Continue with normal processing if no issues found
+//   } catch (error) {
+//     console.error("Error fetching most recent task:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Special handler for project status overview
-async function getProjectStatusOverview(req, res, sessionId) {
-  try {
-    // Get key project metrics in parallel
-    const [openResponse, inProgressResponse, doneResponse, highPriorityResponse, blockedResponse, unassignedResponse, recentResponse] =
-      await Promise.all([
-        // Open issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "Open"`,
-            maxResults: 0,
-          },
-          auth,
-        }),
+// async function getProjectStatusOverview(req, res, sessionId) {
+//   try {
+//     // Get key project metrics in parallel
+//     const [openResponse, inProgressResponse, doneResponse, highPriorityResponse, blockedResponse, unassignedResponse, recentResponse] =
+//       await Promise.all([
+//         // Open issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "Open"`,
+//             maxResults: 0,
+//           },
+//           auth,
+//         }),
 
-        // In Progress issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "In Progress"`,
-            maxResults: 0,
-          },
-          auth,
-        }),
+//         // In Progress issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "In Progress"`,
+//             maxResults: 0,
+//           },
+//           auth,
+//         }),
 
-        // Done issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "Done"`,
-            maxResults: 0,
-          },
-          auth,
-        }),
+//         // Done issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "Done"`,
+//             maxResults: 0,
+//           },
+//           auth,
+//         }),
 
-        // High priority issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND priority in ("High", "Highest") AND status != "Done"`,
-            maxResults: 5,
-            fields: "summary,status,assignee,priority",
-          },
-          auth,
-        }),
+//         // High priority issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND priority in ("High", "Highest") AND status != "Done"`,
+//             maxResults: 5,
+//             fields: "summary,status,assignee,priority",
+//           },
+//           auth,
+//         }),
 
-        // Blocked issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND (status = "Blocked" OR labels = "blocker")`,
-            maxResults: 5,
-            fields: "summary,status,assignee,priority",
-          },
-          auth,
-        }),
+//         // Blocked issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND (status = "Blocked" OR labels = "blocker")`,
+//             maxResults: 5,
+//             fields: "summary,status,assignee,priority",
+//           },
+//           auth,
+//         }),
 
-        // Unassigned issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS EMPTY AND status != "Done"`,
-            maxResults: 5,
-            fields: "summary,status,priority",
-          },
-          auth,
-        }),
+//         // Unassigned issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS EMPTY AND status != "Done"`,
+//             maxResults: 5,
+//             fields: "summary,status,priority",
+//           },
+//           auth,
+//         }),
 
-        // Recently updated issues
-        axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND updated >= -7d ORDER BY updated DESC`,
-            maxResults: 5,
-            fields: "summary,status,updated,assignee",
-          },
-          auth,
-        }),
-      ]);
+//         // Recently updated issues
+//         axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND updated >= -7d ORDER BY updated DESC`,
+//             maxResults: 5,
+//             fields: "summary,status,updated,assignee",
+//           },
+//           auth,
+//         }),
+//       ]);
 
-    // Compile the data
-    const statusData = {
-      openCount: openResponse.data.total,
-      inProgressCount: inProgressResponse.data.total,
-      doneCount: doneResponse.data.total,
-      totalCount: openResponse.data.total + inProgressResponse.data.total + doneResponse.data.total,
-      highPriorityIssues: highPriorityResponse.data.issues,
-      highPriorityCount: highPriorityResponse.data.total,
-      blockedIssues: blockedResponse.data.issues,
-      blockedCount: blockedResponse.data.total,
-      unassignedIssues: unassignedResponse.data.issues,
-      unassignedCount: unassignedResponse.data.total,
-      recentIssues: recentResponse.data.issues,
-      recentCount: recentResponse.data.total,
-    };
+//     // Compile the data
+//     const statusData = {
+//       openCount: openResponse.data.total,
+//       inProgressCount: inProgressResponse.data.total,
+//       doneCount: doneResponse.data.total,
+//       totalCount: openResponse.data.total + inProgressResponse.data.total + doneResponse.data.total,
+//       highPriorityIssues: highPriorityResponse.data.issues,
+//       highPriorityCount: highPriorityResponse.data.total,
+//       blockedIssues: blockedResponse.data.issues,
+//       blockedCount: blockedResponse.data.total,
+//       unassignedIssues: unassignedResponse.data.issues,
+//       unassignedCount: unassignedResponse.data.total,
+//       recentIssues: recentResponse.data.issues,
+//       recentCount: recentResponse.data.total,
+//     };
 
-    // Calculate percentages for better insights
-    const completionPercentage = Math.round((statusData.doneCount / statusData.totalCount) * 100) || 0;
+//     // Calculate percentages for better insights
+//     const completionPercentage = Math.round((statusData.doneCount / statusData.totalCount) * 100) || 0;
 
-    try {
-      // Generate a conversational response using AI
-      const prompt = `
-        You are a helpful project assistant providing a project status overview. 
-        You should be conversational, insightful and friendly.
+//     try {
+//       // Generate a conversational response using AI
+//       const prompt = `
+//         You are a helpful project assistant providing a project status overview. 
+//         You should be conversational, insightful and friendly.
         
-        Here is data about the current project:
-        - Open tasks: ${statusData.openCount}
-        - Tasks in progress: ${statusData.inProgressCount}
-        - Completed tasks: ${statusData.doneCount}
-        - Project completion: ${completionPercentage}%
-        - High priority issues: ${statusData.highPriorityCount}
-        - Blocked issues: ${statusData.blockedCount}
-        - Unassigned issues: ${statusData.unassignedCount}
-        - Recent updates: ${statusData.recentCount} in the last 7 days
+//         Here is data about the current project:
+//         - Open tasks: ${statusData.openCount}
+//         - Tasks in progress: ${statusData.inProgressCount}
+//         - Completed tasks: ${statusData.doneCount}
+//         - Project completion: ${completionPercentage}%
+//         - High priority issues: ${statusData.highPriorityCount}
+//         - Blocked issues: ${statusData.blockedCount}
+//         - Unassigned issues: ${statusData.unassignedCount}
+//         - Recent updates: ${statusData.recentCount} in the last 7 days
         
-        Craft a brief, conversational summary of the project status that gives the key highlights.
-        Include relevant insights based on the numbers.
-        Format important information in bold using markdown (**bold**).
-        Use bullet points sparingly, and only when it helps readability.
-      `;
+//         Craft a brief, conversational summary of the project status that gives the key highlights.
+//         Include relevant insights based on the numbers.
+//         Format important information in bold using markdown (**bold**).
+//         Use bullet points sparingly, and only when it helps readability.
+//       `;
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          { role: "system", content: prompt },
-          { role: "user", content: "Give me a friendly project status overview" },
-        ],
-        temperature: 0.7,
-      });
+//       const response = await openai.chat.completions.create({
+//         model: "gpt-4",
+//         messages: [
+//           { role: "system", content: prompt },
+//           { role: "user", content: "Give me a friendly project status overview" },
+//         ],
+//         temperature: 0.7,
+//       });
 
-      // Start with the AI-generated project overview
-      let formattedResponse = response.choices[0].message.content;
+//       // Start with the AI-generated project overview
+//       let formattedResponse = response.choices[0].message.content;
 
-      // Add high priority issues if there are any
-      if (statusData.highPriorityIssues.length > 0) {
-        formattedResponse += "\n\n### High Priority Issues\n";
-        for (const issue of statusData.highPriorityIssues.slice(0, 3)) {
-          const priority = issue.fields.priority?.name || "High";
-          const assignee = issue.fields.assignee?.displayName || "Unassigned";
-          formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${priority}, assigned to ${assignee})\n`;
-        }
+//       // Add high priority issues if there are any
+//       if (statusData.highPriorityIssues.length > 0) {
+//         formattedResponse += "\n\n### High Priority Issues\n";
+//         for (const issue of statusData.highPriorityIssues.slice(0, 3)) {
+//           const priority = issue.fields.priority?.name || "High";
+//           const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//           formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${priority}, assigned to ${assignee})\n`;
+//         }
 
-        if (statusData.highPriorityCount > 3) {
-          formattedResponse += `... and ${statusData.highPriorityCount - 3} more high priority issues.\n`;
-        }
-      }
+//         if (statusData.highPriorityCount > 3) {
+//           formattedResponse += `... and ${statusData.highPriorityCount - 3} more high priority issues.\n`;
+//         }
+//       }
 
-      // Add blocked issues if there are any
-      if (statusData.blockedIssues.length > 0) {
-        formattedResponse += "\n\n### Blocked Issues\n";
-        for (const issue of statusData.blockedIssues.slice(0, 3)) {
-          const assignee = issue.fields.assignee?.displayName || "Unassigned";
-          formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (assigned to ${assignee})\n`;
-        }
+//       // Add blocked issues if there are any
+//       if (statusData.blockedIssues.length > 0) {
+//         formattedResponse += "\n\n### Blocked Issues\n";
+//         for (const issue of statusData.blockedIssues.slice(0, 3)) {
+//           const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//           formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (assigned to ${assignee})\n`;
+//         }
 
-        if (statusData.blockedCount > 3) {
-          formattedResponse += `... and ${statusData.blockedCount - 3} more blocked issues.\n`;
-        }
-      }
+//         if (statusData.blockedCount > 3) {
+//           formattedResponse += `... and ${statusData.blockedCount - 3} more blocked issues.\n`;
+//         }
+//       }
 
-      // Store in conversation memory
-      if (conversationMemory[sessionId]) {
-        conversationMemory[sessionId].lastResponse = formattedResponse;
-      }
+//       // Store in conversation memory
+//       if (conversationMemory[sessionId]) {
+//         conversationMemory[sessionId].lastResponse = formattedResponse;
+//       }
 
-      return res.json({
-        message: formattedResponse,
-        rawData: statusData,
-        meta: {
-          intent: "PROJECT_STATUS",
-        },
-      });
-    } catch (aiError) {
-      console.error("Error generating AI project status:", aiError);
+//       return res.json({
+//         message: formattedResponse,
+//         rawData: statusData,
+//         meta: {
+//           intent: "PROJECT_STATUS",
+//         },
+//       });
+//     } catch (aiError) {
+//       console.error("Error generating AI project status:", aiError);
 
-      // Fallback to a formatted response without AI
-      let formattedResponse = `## Project Status Overview\n\n`;
-      formattedResponse += `**Current progress**: ${completionPercentage}% complete\n`;
-      formattedResponse += `**Open tasks**: ${statusData.openCount}\n`;
-      formattedResponse += `**In progress**: ${statusData.inProgressCount}\n`;
-      formattedResponse += `**Completed**: ${statusData.doneCount}\n\n`;
+//       // Fallback to a formatted response without AI
+//       let formattedResponse = `## Project Status Overview\n\n`;
+//       formattedResponse += `**Current progress**: ${completionPercentage}% complete\n`;
+//       formattedResponse += `**Open tasks**: ${statusData.openCount}\n`;
+//       formattedResponse += `**In progress**: ${statusData.inProgressCount}\n`;
+//       formattedResponse += `**Completed**: ${statusData.doneCount}\n\n`;
 
-      if (statusData.highPriorityCount > 0) {
-        formattedResponse += `**High priority issues**: ${statusData.highPriorityCount}\n`;
-      }
+//       if (statusData.highPriorityCount > 0) {
+//         formattedResponse += `**High priority issues**: ${statusData.highPriorityCount}\n`;
+//       }
 
-      if (statusData.blockedCount > 0) {
-        formattedResponse += `**Blocked issues**: ${statusData.blockedCount}\n`;
-      }
+//       if (statusData.blockedCount > 0) {
+//         formattedResponse += `**Blocked issues**: ${statusData.blockedCount}\n`;
+//       }
 
-      if (statusData.unassignedCount > 0) {
-        formattedResponse += `**Unassigned tasks**: ${statusData.unassignedCount}\n`;
-      }
+//       if (statusData.unassignedCount > 0) {
+//         formattedResponse += `**Unassigned tasks**: ${statusData.unassignedCount}\n`;
+//       }
 
-      formattedResponse += `\n### Recent Activity\n`;
-      for (const issue of statusData.recentIssues.slice(0, 3)) {
-        const status = issue.fields.status?.name || "Unknown";
-        const updated = new Date(issue.fields.updated).toLocaleDateString();
-        formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status}, updated on ${updated})\n`;
-      }
+//       formattedResponse += `\n### Recent Activity\n`;
+//       for (const issue of statusData.recentIssues.slice(0, 3)) {
+//         const status = issue.fields.status?.name || "Unknown";
+//         const updated = new Date(issue.fields.updated).toLocaleDateString();
+//         formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status}, updated on ${updated})\n`;
+//       }
 
-      // Store in conversation memory
-      if (conversationMemory[sessionId]) {
-        conversationMemory[sessionId].lastResponse = formattedResponse;
-      }
+//       // Store in conversation memory
+//       if (conversationMemory[sessionId]) {
+//         conversationMemory[sessionId].lastResponse = formattedResponse;
+//       }
 
-      return res.json({
-        message: formattedResponse,
-        rawData: statusData,
-        meta: {
-          intent: "PROJECT_STATUS",
-        },
-      });
-    }
-  } catch (error) {
-    console.error("Error fetching project status:", error);
-    return null; // Continue with normal processing
-  }
-}
+//       return res.json({
+//         message: formattedResponse,
+//         rawData: statusData,
+//         meta: {
+//           intent: "PROJECT_STATUS",
+//         },
+//       });
+//     }
+//   } catch (error) {
+//     console.error("Error fetching project status:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Special handler for timeline queries
 async function getProjectTimeline(req, res, query, sessionId) {
@@ -3082,160 +3084,160 @@ function extractRecentAssignees(queries) {
 
 // Store conversation context
 // Enhanced conversation memory with user preference tracking
-const conversationMemory = {};
+// const conversationMemory = {};
 
-// Initialize or get conversation memory for a session
-function getConversationMemory(sessionId = "default") {
-  if (!conversationMemory[sessionId]) {
-    // Create a fully initialized memory object
-    conversationMemory[sessionId] = {
-      queries: [],
-      intents: [],
-      lastResponse: null,
-      lastIssueKey: null,
-      userPreferences: {
-        verbosityLevel: "medium",
-        favoriteAssignees: {},
-        favoriteStatuses: {},
-        frequentIssueTypes: {},
-        preferredSortOrder: null,
-        avgQueryLength: 0,
-        queryCount: 0,
-        lastActive: Date.now(),
-        sessionDuration: 0,
-        sessionStartTime: Date.now(),
-      },
-      responseMetrics: {
-        totalResponses: 0,
-        aiGeneratedResponses: 0,
-        fallbackResponses: 0,
-        emptyResultsResponses: 0,
-        averageResponseTime: 0,
-        totalResponseTime: 0,
-      },
-    };
-  } else {
-    // Ensure all required fields exist (defensive programming)
-    const memory = conversationMemory[sessionId];
+// // Initialize or get conversation memory for a session
+// function getConversationMemory(sessionId = "default") {
+//   if (!conversationMemory[sessionId]) {
+//     // Create a fully initialized memory object
+//     conversationMemory[sessionId] = {
+//       queries: [],
+//       intents: [],
+//       lastResponse: null,
+//       lastIssueKey: null,
+//       userPreferences: {
+//         verbosityLevel: "medium",
+//         favoriteAssignees: {},
+//         favoriteStatuses: {},
+//         frequentIssueTypes: {},
+//         preferredSortOrder: null,
+//         avgQueryLength: 0,
+//         queryCount: 0,
+//         lastActive: Date.now(),
+//         sessionDuration: 0,
+//         sessionStartTime: Date.now(),
+//       },
+//       responseMetrics: {
+//         totalResponses: 0,
+//         aiGeneratedResponses: 0,
+//         fallbackResponses: 0,
+//         emptyResultsResponses: 0,
+//         averageResponseTime: 0,
+//         totalResponseTime: 0,
+//       },
+//     };
+//   } else {
+//     // Ensure all required fields exist (defensive programming)
+//     const memory = conversationMemory[sessionId];
 
-    if (!memory.queries) memory.queries = [];
-    if (!memory.intents) memory.intents = [];
+//     if (!memory.queries) memory.queries = [];
+//     if (!memory.intents) memory.intents = [];
 
-    // Initialize userPreferences if it doesn't exist
-    if (!memory.userPreferences) {
-      memory.userPreferences = {
-        verbosityLevel: "medium",
-        favoriteAssignees: {},
-        favoriteStatuses: {},
-        frequentIssueTypes: {},
-        preferredSortOrder: null,
-        avgQueryLength: 0,
-        queryCount: 0,
-        lastActive: Date.now(),
-        sessionDuration: 0,
-        sessionStartTime: Date.now(),
-      };
-    }
+//     // Initialize userPreferences if it doesn't exist
+//     if (!memory.userPreferences) {
+//       memory.userPreferences = {
+//         verbosityLevel: "medium",
+//         favoriteAssignees: {},
+//         favoriteStatuses: {},
+//         frequentIssueTypes: {},
+//         preferredSortOrder: null,
+//         avgQueryLength: 0,
+//         queryCount: 0,
+//         lastActive: Date.now(),
+//         sessionDuration: 0,
+//         sessionStartTime: Date.now(),
+//       };
+//     }
 
-    // Initialize responseMetrics if it doesn't exist
-    if (!memory.responseMetrics) {
-      memory.responseMetrics = {
-        totalResponses: 0,
-        aiGeneratedResponses: 0,
-        fallbackResponses: 0,
-        emptyResultsResponses: 0,
-        averageResponseTime: 0,
-        totalResponseTime: 0,
-      };
-    }
-  }
+//     // Initialize responseMetrics if it doesn't exist
+//     if (!memory.responseMetrics) {
+//       memory.responseMetrics = {
+//         totalResponses: 0,
+//         aiGeneratedResponses: 0,
+//         fallbackResponses: 0,
+//         emptyResultsResponses: 0,
+//         averageResponseTime: 0,
+//         totalResponseTime: 0,
+//       };
+//     }
+//   }
 
-  return conversationMemory[sessionId];
-}
+//   return conversationMemory[sessionId];
+// }
 
-// Update conversation memory with new query and response
-function updateConversationMemory(sessionId, query, intent, response, responseTime, usedAI = true, hadResults = true) {
-  const memory = getConversationMemory(sessionId);
+// // Update conversation memory with new query and response
+// function updateConversationMemory(sessionId, query, intent, response, responseTime, usedAI = true, hadResults = true) {
+//   const memory = getConversationMemory(sessionId);
 
-  // Update query history
-  memory.queries.push(query);
-  if (memory.queries.length > 10) {
-    memory.queries.shift(); // Keep only the 10 most recent
-  }
+//   // Update query history
+//   memory.queries.push(query);
+//   if (memory.queries.length > 10) {
+//     memory.queries.shift(); // Keep only the 10 most recent
+//   }
 
-  // Update intent history
-  memory.intents.push(intent);
-  if (memory.intents.length > 10) {
-    memory.intents.shift();
-  }
+//   // Update intent history
+//   memory.intents.push(intent);
+//   if (memory.intents.length > 10) {
+//     memory.intents.shift();
+//   }
 
-  // Store last response
-  memory.lastResponse = response;
+//   // Store last response
+//   memory.lastResponse = response;
 
-  // Track last viewed issue if applicable
-  const issueKeyMatch = query.match(new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i"));
-  if (issueKeyMatch && intent === "TASK_DETAILS") {
-    memory.lastIssueKey = issueKeyMatch[0];
-  }
+//   // Track last viewed issue if applicable
+//   const issueKeyMatch = query.match(new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "i"));
+//   if (issueKeyMatch && intent === "TASK_DETAILS") {
+//     memory.lastIssueKey = issueKeyMatch[0];
+//   }
 
-  // Ensure userPreferences exists
-  if (!memory.userPreferences) {
-    memory.userPreferences = {
-      verbosityLevel: "medium",
-      favoriteAssignees: {},
-      favoriteStatuses: {},
-      frequentIssueTypes: {},
-      preferredSortOrder: null,
-      avgQueryLength: 0,
-      queryCount: 0,
-      lastActive: null,
-      sessionDuration: 0,
-      sessionStartTime: Date.now(),
-    };
-  }
+//   // Ensure userPreferences exists
+//   if (!memory.userPreferences) {
+//     memory.userPreferences = {
+//       verbosityLevel: "medium",
+//       favoriteAssignees: {},
+//       favoriteStatuses: {},
+//       frequentIssueTypes: {},
+//       preferredSortOrder: null,
+//       avgQueryLength: 0,
+//       queryCount: 0,
+//       lastActive: null,
+//       sessionDuration: 0,
+//       sessionStartTime: Date.now(),
+//     };
+//   }
 
-  // Ensure responseMetrics exists
-  if (!memory.responseMetrics) {
-    memory.responseMetrics = {
-      totalResponses: 0,
-      aiGeneratedResponses: 0,
-      fallbackResponses: 0,
-      emptyResultsResponses: 0,
-      averageResponseTime: 0,
-      totalResponseTime: 0,
-    };
-  }
+//   // Ensure responseMetrics exists
+//   if (!memory.responseMetrics) {
+//     memory.responseMetrics = {
+//       totalResponses: 0,
+//       aiGeneratedResponses: 0,
+//       fallbackResponses: 0,
+//       emptyResultsResponses: 0,
+//       averageResponseTime: 0,
+//       totalResponseTime: 0,
+//     };
+//   }
 
-  // Update user preferences based on this interaction
-  updateUserPreferences(memory, query, intent, response);
+//   // Update user preferences based on this interaction
+//   updateUserPreferences(memory, query, intent, response);
 
-  // Update response metrics
-  memory.responseMetrics.totalResponses++;
-  memory.responseMetrics.totalResponseTime += responseTime;
-  memory.responseMetrics.averageResponseTime = memory.responseMetrics.totalResponseTime / memory.responseMetrics.totalResponses;
+//   // Update response metrics
+//   memory.responseMetrics.totalResponses++;
+//   memory.responseMetrics.totalResponseTime += responseTime;
+//   memory.responseMetrics.averageResponseTime = memory.responseMetrics.totalResponseTime / memory.responseMetrics.totalResponses;
 
-  if (usedAI) {
-    memory.responseMetrics.aiGeneratedResponses++;
-  } else {
-    memory.responseMetrics.fallbackResponses++;
-  }
+//   if (usedAI) {
+//     memory.responseMetrics.aiGeneratedResponses++;
+//   } else {
+//     memory.responseMetrics.fallbackResponses++;
+//   }
 
-  if (!hadResults) {
-    memory.responseMetrics.emptyResultsResponses++;
-  }
+//   if (!hadResults) {
+//     memory.responseMetrics.emptyResultsResponses++;
+//   }
 
-  // Update session metrics
-  memory.userPreferences.lastActive = Date.now();
-  memory.userPreferences.sessionDuration = memory.userPreferences.lastActive - memory.userPreferences.sessionStartTime;
-  memory.userPreferences.queryCount = (memory.userPreferences.queryCount || 0) + 1;
+//   // Update session metrics
+//   memory.userPreferences.lastActive = Date.now();
+//   memory.userPreferences.sessionDuration = memory.userPreferences.lastActive - memory.userPreferences.sessionStartTime;
+//   memory.userPreferences.queryCount = (memory.userPreferences.queryCount || 0) + 1;
 
-  // Update average query length
-  const prevQueryCount = memory.userPreferences.queryCount - 1;
-  const totalQueryLength = memory.userPreferences.avgQueryLength * prevQueryCount + query.length;
-  memory.userPreferences.avgQueryLength = totalQueryLength / memory.userPreferences.queryCount;
+//   // Update average query length
+//   const prevQueryCount = memory.userPreferences.queryCount - 1;
+//   const totalQueryLength = memory.userPreferences.avgQueryLength * prevQueryCount + query.length;
+//   memory.userPreferences.avgQueryLength = totalQueryLength / memory.userPreferences.queryCount;
 
-  return memory;
-}
+//   return memory;
+// }
 
 // Update user preferences based on interactions
 function updateUserPreferences(memory, query, intent, response) {

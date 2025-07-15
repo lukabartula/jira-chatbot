@@ -1,7 +1,10 @@
 import { sanitizeJql } from '../utils/jiraUtils.js';
-// import { extractEntitiesFromQuery } from '../utils/extractors.js';
+import { extractEntitiesFromQuery } from '../utils/extractors.js';
 import { openai } from '../config/openaiConfig.js';
+import axios from 'axios';
+import { createJiraLink, extractTextFromADF } from '../utils/jiraUtils.js';
 import { safeJqlTemplates } from '../config/jiraConfig.js';
+import { conversationMemory } from '../memory/conversationMemory.js';
 
 
 export async function fallbackGenerateJQL(query, intent) {
@@ -238,5 +241,311 @@ export async function generateJQL(query, intent) {
           return fallbackGenerateJQL(query, intent);
         }
     }
+}
+
+export async function getMostRecentTaskDetails(req, res, query, sessionId) {
+  try {
+    // Get the most recently updated task
+    const recentTaskResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
+      params: {
+        jql: `project = ${process.env.JIRA_PROJECT_KEY} ORDER BY updated DESC`,
+        maxResults: 1,
+        fields: "summary,status,assignee,priority,created,updated,duedate,comment,description",
+      },
+      auth,
+    });
+
+    if (recentTaskResponse.data && recentTaskResponse.data.issues && recentTaskResponse.data.issues.length > 0) {
+      const issue = recentTaskResponse.data.issues[0];
+      const status = issue.fields.status?.name || "Unknown";
+      const assignee = issue.fields.assignee?.displayName || "Unassigned";
+      const summary = issue.fields.summary || "No summary";
+      const priority = issue.fields.priority?.name || "Not set";
+      const created = new Date(issue.fields.created).toLocaleDateString();
+      const updated = new Date(issue.fields.updated).toLocaleDateString();
+
+      // Description handling
+      let description = "No description provided.";
+      if (issue.fields.description) {
+        if (typeof issue.fields.description === "string") {
+          description = issue.fields.description;
+        } else if (issue.fields.description.content) {
+          try {
+            description = extractTextFromADF(issue.fields.description);
+          } catch (e) {
+            description = "Description contains rich formatting that cannot be displayed in plain text.";
+          }
+        }
+      }
+
+      // Comment handling
+      const comments = issue.fields.comment?.comments || [];
+      let commentMessage = "No comments found on this issue.";
+      if (comments.length > 0) {
+        const latestComment = comments[comments.length - 1];
+        const author = latestComment.author?.displayName || "Unknown";
+        const commentCreated = new Date(latestComment.created).toLocaleDateString();
+        let commentText = "";
+
+        if (typeof latestComment.body === "string") {
+          commentText = latestComment.body;
+        } else if (latestComment.body && latestComment.body.content) {
+          try {
+            commentText = extractTextFromADF(latestComment.body);
+          } catch (e) {
+            commentText = "Comment contains rich content that cannot be displayed in plain text.";
+          }
+        }
+
+        commentMessage = `**Latest comment** (by ${author} on ${commentCreated}):\n"${commentText}"`;
+      }
+
+      const formattedResponse =
+        `## ${createJiraLink(issue.key)}: ${summary} (Most Recently Updated)\n\n` +
+        `**Status**: ${status}\n` +
+        `**Priority**: ${priority}\n` +
+        `**Assignee**: ${assignee}\n` +
+        `**Created**: ${created}\n` +
+        `**Last Updated**: ${updated}\n\n` +
+        `### Description\n${description}\n\n` +
+        `### Latest Comment\n${commentMessage}`;
+
+      // Store response in conversation memory
+      if (conversationMemory[sessionId]) {
+        conversationMemory[sessionId].lastResponse = formattedResponse;
+      }
+
+      if (jql) {
+        const jiraFilterLink = createJiraFilterLink(jql);
+        formattedResponse += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
+      }
+
+      return res.json({
+        message: formattedResponse,
+        rawData: issue,
+        meta: {
+          intent: "TASK_DETAILS",
+          issueKey: issue.key,
+        },
+      });
+    }
+    return null; // Continue with normal processing if no issues found
+  } catch (error) {
+    console.error("Error fetching most recent task:", error);
+    return null; // Continue with normal processing
+  }
+}
+
+export async function getProjectStatusOverview(req, res, sessionId) {
+  try {
+    // Get key project metrics in parallel
+    const [openResponse, inProgressResponse, doneResponse, highPriorityResponse, blockedResponse, unassignedResponse, recentResponse] =
+      await Promise.all([
+        // Open issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "Open"`,
+            maxResults: 0,
+          },
+          auth,
+        }),
+
+        // In Progress issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "In Progress"`,
+            maxResults: 0,
+          },
+          auth,
+        }),
+
+        // Done issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND status = "Done"`,
+            maxResults: 0,
+          },
+          auth,
+        }),
+
+        // High priority issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND priority in ("High", "Highest") AND status != "Done"`,
+            maxResults: 5,
+            fields: "summary,status,assignee,priority",
+          },
+          auth,
+        }),
+
+        // Blocked issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND (status = "Blocked" OR labels = "blocker")`,
+            maxResults: 5,
+            fields: "summary,status,assignee,priority",
+          },
+          auth,
+        }),
+
+        // Unassigned issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS EMPTY AND status != "Done"`,
+            maxResults: 5,
+            fields: "summary,status,priority",
+          },
+          auth,
+        }),
+
+        // Recently updated issues
+        axios.get(`${JIRA_URL}/rest/api/3/search`, {
+          params: {
+            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND updated >= -7d ORDER BY updated DESC`,
+            maxResults: 5,
+            fields: "summary,status,updated,assignee",
+          },
+          auth,
+        }),
+      ]);
+
+    // Compile the data
+    const statusData = {
+      openCount: openResponse.data.total,
+      inProgressCount: inProgressResponse.data.total,
+      doneCount: doneResponse.data.total,
+      totalCount: openResponse.data.total + inProgressResponse.data.total + doneResponse.data.total,
+      highPriorityIssues: highPriorityResponse.data.issues,
+      highPriorityCount: highPriorityResponse.data.total,
+      blockedIssues: blockedResponse.data.issues,
+      blockedCount: blockedResponse.data.total,
+      unassignedIssues: unassignedResponse.data.issues,
+      unassignedCount: unassignedResponse.data.total,
+      recentIssues: recentResponse.data.issues,
+      recentCount: recentResponse.data.total,
+    };
+
+    // Calculate percentages for better insights
+    const completionPercentage = Math.round((statusData.doneCount / statusData.totalCount) * 100) || 0;
+
+    try {
+      // Generate a conversational response using AI
+      const prompt = `
+        You are a helpful project assistant providing a project status overview. 
+        You should be conversational, insightful and friendly.
+        
+        Here is data about the current project:
+        - Open tasks: ${statusData.openCount}
+        - Tasks in progress: ${statusData.inProgressCount}
+        - Completed tasks: ${statusData.doneCount}
+        - Project completion: ${completionPercentage}%
+        - High priority issues: ${statusData.highPriorityCount}
+        - Blocked issues: ${statusData.blockedCount}
+        - Unassigned issues: ${statusData.unassignedCount}
+        - Recent updates: ${statusData.recentCount} in the last 7 days
+        
+        Craft a brief, conversational summary of the project status that gives the key highlights.
+        Include relevant insights based on the numbers.
+        Format important information in bold using markdown (**bold**).
+        Use bullet points sparingly, and only when it helps readability.
+      `;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4",
+        messages: [
+          { role: "system", content: prompt },
+          { role: "user", content: "Give me a friendly project status overview" },
+        ],
+        temperature: 0.7,
+      });
+
+      // Start with the AI-generated project overview
+      let formattedResponse = response.choices[0].message.content;
+
+      // Add high priority issues if there are any
+      if (statusData.highPriorityIssues.length > 0) {
+        formattedResponse += "\n\n### High Priority Issues\n";
+        for (const issue of statusData.highPriorityIssues.slice(0, 3)) {
+          const priority = issue.fields.priority?.name || "High";
+          const assignee = issue.fields.assignee?.displayName || "Unassigned";
+          formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${priority}, assigned to ${assignee})\n`;
+        }
+
+        if (statusData.highPriorityCount > 3) {
+          formattedResponse += `... and ${statusData.highPriorityCount - 3} more high priority issues.\n`;
+        }
+      }
+
+      // Add blocked issues if there are any
+      if (statusData.blockedIssues.length > 0) {
+        formattedResponse += "\n\n### Blocked Issues\n";
+        for (const issue of statusData.blockedIssues.slice(0, 3)) {
+          const assignee = issue.fields.assignee?.displayName || "Unassigned";
+          formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (assigned to ${assignee})\n`;
+        }
+
+        if (statusData.blockedCount > 3) {
+          formattedResponse += `... and ${statusData.blockedCount - 3} more blocked issues.\n`;
+        }
+      }
+
+      // Store in conversation memory
+      if (conversationMemory[sessionId]) {
+        conversationMemory[sessionId].lastResponse = formattedResponse;
+      }
+
+      return res.json({
+        message: formattedResponse,
+        rawData: statusData,
+        meta: {
+          intent: "PROJECT_STATUS",
+        },
+      });
+    } catch (aiError) {
+      console.error("Error generating AI project status:", aiError);
+
+      // Fallback to a formatted response without AI
+      let formattedResponse = `## Project Status Overview\n\n`;
+      formattedResponse += `**Current progress**: ${completionPercentage}% complete\n`;
+      formattedResponse += `**Open tasks**: ${statusData.openCount}\n`;
+      formattedResponse += `**In progress**: ${statusData.inProgressCount}\n`;
+      formattedResponse += `**Completed**: ${statusData.doneCount}\n\n`;
+
+      if (statusData.highPriorityCount > 0) {
+        formattedResponse += `**High priority issues**: ${statusData.highPriorityCount}\n`;
+      }
+
+      if (statusData.blockedCount > 0) {
+        formattedResponse += `**Blocked issues**: ${statusData.blockedCount}\n`;
+      }
+
+      if (statusData.unassignedCount > 0) {
+        formattedResponse += `**Unassigned tasks**: ${statusData.unassignedCount}\n`;
+      }
+
+      formattedResponse += `\n### Recent Activity\n`;
+      for (const issue of statusData.recentIssues.slice(0, 3)) {
+        const status = issue.fields.status?.name || "Unknown";
+        const updated = new Date(issue.fields.updated).toLocaleDateString();
+        formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status}, updated on ${updated})\n`;
+      }
+
+      // Store in conversation memory
+      if (conversationMemory[sessionId]) {
+        conversationMemory[sessionId].lastResponse = formattedResponse;
+      }
+
+      return res.json({
+        message: formattedResponse,
+        rawData: statusData,
+        meta: {
+          intent: "PROJECT_STATUS",
+        },
+      });
+    }
+  } catch (error) {
+    console.error("Error fetching project status:", error);
+    return null; // Continue with normal processing
+  }
 }
 
