@@ -1,3 +1,5 @@
+import { updateUserPreferences } from "./userContext";
+
 export const conversationMemory = {};
 
 export function getConversationMemory(sessionId = "default") {
@@ -151,65 +153,4 @@ export function updateConversationMemory(sessionId, query, intent, response, res
   memory.userPreferences.avgQueryLength = totalQueryLength / memory.userPreferences.queryCount;
 
   return memory;
-}
-function updateUserPreferences(memory, query, intent, response) {
-  // Make sure userPreferences exists
-  if (!memory.userPreferences) {
-    memory.userPreferences = {
-      verbosityLevel: "medium",
-      favoriteAssignees: {},
-      favoriteStatuses: {},
-      frequentIssueTypes: {},
-      preferredSortOrder: null,
-      avgQueryLength: 0,
-      queryCount: 0,
-      lastActive: Date.now(),
-      sessionDuration: 0,
-      sessionStartTime: Date.now(),
-    };
-  }
-
-  // Check verbosity preference based on query
-  if (/brief|short|quick|summary|summarize/i.test(query)) {
-    memory.userPreferences.verbosityLevel = "concise";
-  } else if (/detail|detailed|in depth|elaborate|full|comprehensive/i.test(query)) {
-    memory.userPreferences.verbosityLevel = "detailed";
-  }
-
-  // Track mentioned assignees
-  const assigneeMatch = query.match(/assigned to (\w+)|(\w+)'s tasks/i);
-  if (assigneeMatch) {
-    const assignee = assigneeMatch[1] || assigneeMatch[2];
-    if (!memory.userPreferences.favoriteAssignees) memory.userPreferences.favoriteAssignees = {};
-    memory.userPreferences.favoriteAssignees[assignee] = (memory.userPreferences.favoriteAssignees[assignee] || 0) + 1;
-  }
-
-  // Track mentioned statuses
-  const statusMatch = query.match(/status (?:is |=)?\s*"?(open|in progress|done|closed|to do)"?/i);
-  if (statusMatch) {
-    const status = statusMatch[1].toLowerCase();
-    if (!memory.userPreferences.favoriteStatuses) memory.userPreferences.favoriteStatuses = {};
-    memory.userPreferences.favoriteStatuses[status] = (memory.userPreferences.favoriteStatuses[status] || 0) + 1;
-  }
-
-  // Track issue types they're interested in
-  const typeMatch = query.match(/type (?:is |=)?\s*"?(bug|story|task|epic)"?/i);
-  if (typeMatch) {
-    const issueType = typeMatch[1].toLowerCase();
-    if (!memory.userPreferences.frequentIssueTypes) memory.userPreferences.frequentIssueTypes = {};
-    memory.userPreferences.frequentIssueTypes[issueType] = (memory.userPreferences.frequentIssueTypes[issueType] || 0) + 1;
-  }
-
-  // Track sort order preference
-  if (/sort by|order by/i.test(query)) {
-    if (/recent|latest|newest|updated/i.test(query)) {
-      memory.userPreferences.preferredSortOrder = "updated DESC";
-    } else if (/oldest|first|created/i.test(query)) {
-      memory.userPreferences.preferredSortOrder = "created ASC";
-    } else if (/priority/i.test(query)) {
-      memory.userPreferences.preferredSortOrder = "priority DESC";
-    } else if (/due date|deadline/i.test(query)) {
-      memory.userPreferences.preferredSortOrder = "duedate ASC";
-    }
-  }
 }
