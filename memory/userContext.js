@@ -1,4 +1,4 @@
-import { conversationMemory, getConversationMemory, updateConversationMemory } from "./conversationMemory";
+import { conversationMemory, getConversationMemory, updateConversationMemory } from "./conversationMemory.js";
 
 export function updateUserPreferences(memory, query, intent, response) {
   // Make sure userPreferences exists

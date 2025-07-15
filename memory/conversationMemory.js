@@ -1,4 +1,4 @@
-import { updateUserPreferences } from "./userContext";
+import { updateUserPreferences } from "./userContext.js";
 
 export const conversationMemory = {};
 
