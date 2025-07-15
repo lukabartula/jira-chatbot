@@ -1,4 +1,4 @@
-export function extractEntititesFromQuery(query) {
+export function extractEntitiesFromQuery(query) {
     const entities = {
     assignee: null,
     priority: null,
