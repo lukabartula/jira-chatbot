@@ -1,4 +1,4 @@
-const conversationMemory = {};
+export const conversationMemory = {};
 
 export function getConversationMemory(sessionId = "default") {
     if (!conversationMemory[sessionId]) {
