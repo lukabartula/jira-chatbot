@@ -66,7 +66,14 @@ const PROJECT_KEY = process.env.JIRA_PROJECT_KEY || "IHKA"; // Your project key
 const CONFLUENCE_MAIN_PAGE_ID = process.env.CONFLUENCE_MAIN_PAGE_ID || "4624646162";
 const CONFLUENCE_AUTO_INDEX = process.env.CONFLUENCE_AUTO_INDEX === "true";
 
+const CONFLUENCE_URL = process.env.CONFLUENCE_URL;
+const CONFLUENCE_USER = process.env.JIRA_USER;
+const CONFLUENCE_API_TOKEN = process.env.JIRA_API_TOKEN;
 
+export const confluenceAuth = {
+  username: CONFLUENCE_USER,
+  password: CONFLUENCE_API_TOKEN,
+};
 
 // CORS setup
 app.use(cors());
