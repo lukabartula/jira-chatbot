@@ -48,7 +48,11 @@ import {
   handleStatusQuery,
   detectConfluenceIntent,
   handleConfluenceQuery,
-  initializeConfluence
+  initializeConfluence,
+  CONFLUENCE_URL,
+  CONFLUENCE_USER,
+  CONFLUENCE_API_TOKEN,
+  confluenceAuth
  } from "./services/confluenceService.js";
 
 
