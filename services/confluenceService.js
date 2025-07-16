@@ -1,6 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio';
 import { openai } from '../config/openaiConfig.js';
 dotenv.config();
 
