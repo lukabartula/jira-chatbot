@@ -33,6 +33,12 @@ import {
  } from "./utils/jiraUtils.js";
  import { getDetailedWorkloadAnalysis } from "./services/workloadService.js";
  import { generateResponse } from "./utils/queryContextUtils.js";
+ import {
+  getBitbucketRepos,
+  detectBitbucketIntent,
+  handleBitbucketQuery,
+} from './services/bitbucketService.js';
+
 
 // Load environment variables
 dotenv.config();

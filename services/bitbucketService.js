@@ -13,7 +13,7 @@ const bitbucketAuth = {
   password: process.env.BITBUCKET_API_TOKEN,
 };
 // Helper function to make Bitbucket API requests
-async function callBitbucketApi(endpoint, params = {}) {
+export async function callBitbucketApi(endpoint, params = {}) {
   try {
     // Determine the full URL based on if endpoint is already a full URL
     const url = endpoint.startsWith("http") ? endpoint : `${BITBUCKET_URL}${endpoint}`;
@@ -38,7 +38,7 @@ async function callBitbucketApi(endpoint, params = {}) {
 }
 
 // Function to get repository information
-async function getBitbucketRepos() {
+export async function getBitbucketRepos() {
   try {
     // For Bitbucket Cloud
     if (BITBUCKET_URL.includes("bitbucket.org")) {
@@ -55,7 +55,7 @@ async function getBitbucketRepos() {
 }
 
 // Function to get commits for a repository
-async function getBitbucketCommits(repository, limit = 10) {
+export async function getBitbucketCommits(repository, limit = 10) {
   try {
     // For Bitbucket Cloud
     if (BITBUCKET_URL.includes("bitbucket.org")) {
@@ -76,7 +76,7 @@ async function getBitbucketCommits(repository, limit = 10) {
 }
 
 // Function to get pull requests for a repository
-async function getBitbucketPullRequests(repository, state = "OPEN", limit = 10) {
+export async function getBitbucketPullRequests(repository, state = "OPEN", limit = 10) {
   try {
     console.log(`Fetching ${state} pull requests for ${repository}...`);
 
@@ -178,7 +178,7 @@ async function getBitbucketPullRequests(repository, state = "OPEN", limit = 10) 
 }
 
 // Function to get branches for a repository
-async function getBitbucketBranches(repository, limit = 10) {
+export async function getBitbucketBranches(repository, limit = 10) {
   try {
     // For Bitbucket Cloud
     if (BITBUCKET_URL.includes("bitbucket.org")) {
@@ -199,7 +199,7 @@ async function getBitbucketBranches(repository, limit = 10) {
 }
 
 // Function to get code changes related to a Jira issue
-async function getCodeChangesForJiraIssue(issueKey, limit = 10) {
+export async function getCodeChangesForJiraIssue(issueKey, limit = 10) {
   try {
     // This implementation will vary based on how your Jira and Bitbucket are integrated
     // Option 1: If using Bitbucket Cloud with Jira Cloud integration
@@ -256,7 +256,7 @@ async function getCodeChangesForJiraIssue(issueKey, limit = 10) {
 }
 
 // Test function to verify Bitbucket connectivity
-async function testBitbucketConnection() {
+export async function testBitbucketConnection() {
   try {
     console.log("Testing Bitbucket connection...");
     const repos = await getBitbucketRepos();
@@ -278,7 +278,7 @@ testBitbucketConnection().then((success) => {
 });
 
 // Intent detection for Bitbucket queries
-async function detectBitbucketIntent(query) {
+export async function detectBitbucketIntent(query) {
   // Lowercase and normalize the query for easier matching
   const lowercaseQuery = query
     .toLowerCase()
@@ -539,7 +539,7 @@ async function detectBitbucketIntent(query) {
 }
 
 // Main handler for Bitbucket queries
-async function handleBitbucketQuery(query, intent, meta = {}) {
+export async function handleBitbucketQuery(query, intent, meta = {}) {
   try {
     console.log(`Handling Bitbucket query with intent: ${intent}`);
     console.log("Meta data:", meta);
@@ -625,7 +625,7 @@ async function handleBitbucketQuery(query, intent, meta = {}) {
 }
 
 // Handler for listing repositories
-async function handleRepositoriesQuery() {
+export async function handleRepositoriesQuery() {
   try {
     console.log("Fetching all repositories...");
     const reposData = await getBitbucketRepos();
@@ -709,7 +709,7 @@ async function handleRepositoriesQuery() {
 }
 
 // Handler for commit history
-async function handleCommitsQuery(repository, limit = 10) {
+export async function handleCommitsQuery(repository, limit = 10) {
   if (!repository) {
     return "Please specify a repository to view commits. For example: 'Show commits in my-repo'";
   }
@@ -788,7 +788,7 @@ async function handleCommitsQuery(repository, limit = 10) {
 }
 
 // Handler for branches
-async function handleBranchesQuery(repository) {
+export async function handleBranchesQuery(repository) {
   if (!repository) {
     return "Please specify a repository to view branches. For example: 'Show branches in my-repo'";
   }
@@ -956,7 +956,7 @@ async function handleBranchesQuery(repository) {
   }
 }
 
-async function handleBranchCommitsQuery(repository, branch, mode = "") {
+export async function handleBranchCommitsQuery(repository, branch, mode = "") {
   try {
     if (!repository) {
       return "Please specify a repository to view commits. For example: 'Show last commit on master in my-repo'";
@@ -1080,7 +1080,7 @@ async function handleBranchCommitsQuery(repository, branch, mode = "") {
 }
 
 // Handler for pull requests
-async function handlePullRequestsQuery(repository) {
+export async function handlePullRequestsQuery(repository) {
   try {
     // If no repository specified, try to get pull requests from all repositories
     if (!repository) {
@@ -1252,7 +1252,7 @@ async function handlePullRequestsQuery(repository) {
 }
 
 // Handler for repository info
-async function handleRepositoryInfoQuery(repository) {
+export async function handleRepositoryInfoQuery(repository) {
   if (!repository) {
     return "Please specify a repository. For example: 'Tell me about repo-name'";
   }
@@ -1335,7 +1335,7 @@ async function handleRepositoryInfoQuery(repository) {
 }
 
 // Handler for Jira issue code changes
-async function handleIssueCodeQuery(issueKey) {
+export async function handleIssueCodeQuery(issueKey) {
   if (!issueKey) {
     return "Please specify a Jira issue key. For example: 'Show code changes for NIHK-123'";
   }
