@@ -7,6 +7,7 @@ dotenv.config();
 const BITBUCKET_URL = process.env.BITBUCKET_URL || "https://api.bitbucket.org/2.0";
 const BITBUCKET_WORKSPACE = process.env.BITBUCKET_WORKSPACE;
 const BITBUCKET_REPO = process.env.BITBUCKET_REPO;
+const JIRA_URL = process.env.JIRA_URL || "https://asioso.atlassian.net";
 
 const bitbucketAuth = {
   username: process.env.BITBUCKET_USER,
