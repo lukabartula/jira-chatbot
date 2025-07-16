@@ -10,6 +10,8 @@ dotenv.config();
 const CONFLUENCE_URL = process.env.CONFLUENCE_URL;
 const CONFLUENCE_USER = process.env.JIRA_USER;
 const CONFLUENCE_API_TOKEN = process.env.JIRA_API_TOKEN;
+const CONFLUENCE_MAIN_PAGE_ID = process.env.CONFLUENCE_MAIN_PAGE_ID
+const CONFLUENCE_AUTO_INDEX = process.env.CONFLUENCE_AUTO_INDEX  
 
 const confluenceAuth = {
   username: CONFLUENCE_USER,
