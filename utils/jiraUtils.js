@@ -276,3 +276,413 @@ export function determineFieldsForIntent(intent) {
     return fields;
 
 }
+
+// Helper function to compare two issues and find similarities and differences
+export function compareIssueData(issue1, issue2) {
+  const differences = {};
+  const similarities = {};
+
+  // Compare basic fields
+  if (issue1.status !== issue2.status) {
+    differences.status = { issue1: issue1.status, issue2: issue2.status };
+  } else {
+    similarities.status = issue1.status;
+  }
+
+  if (issue1.assignee !== issue2.assignee) {
+    differences.assignee = { issue1: issue1.assignee, issue2: issue2.assignee };
+  } else {
+    similarities.assignee = issue1.assignee;
+  }
+
+  if (issue1.priority !== issue2.priority) {
+    differences.priority = { issue1: issue1.priority, issue2: issue2.priority };
+  } else {
+    similarities.priority = issue1.priority;
+  }
+
+  if (issue1.issuetype !== issue2.issuetype) {
+    differences.issuetype = { issue1: issue1.issuetype, issue2: issue2.issuetype };
+  } else {
+    similarities.issuetype = issue1.issuetype;
+  }
+
+  // Due date comparison
+  if (issue1.dueDate !== issue2.dueDate) {
+    differences.dueDate = { issue1: issue1.dueDate, issue2: issue2.dueDate };
+
+    // Check which is due first
+    if (issue1.dueDate && issue2.dueDate) {
+      const date1 = new Date(issue1.dueDate);
+      const date2 = new Date(issue2.dueDate);
+      differences.dueDateComparison = date1 < date2 ? `${issue1.key} is due earlier` : `${issue2.key} is due earlier`;
+    }
+  } else {
+    similarities.dueDate = issue1.dueDate;
+  }
+
+  // Compare arrays (labels, components)
+  if (JSON.stringify(issue1.labels.sort()) !== JSON.stringify(issue2.labels.sort())) {
+    const commonLabels = issue1.labels.filter((l) => issue2.labels.includes(l));
+    const uniqueToIssue1 = issue1.labels.filter((l) => !issue2.labels.includes(l));
+    const uniqueToIssue2 = issue2.labels.filter((l) => !issue1.labels.includes(l));
+
+    differences.labels = {
+      commonLabels,
+      uniqueToIssue1,
+      uniqueToIssue2,
+    };
+  } else if (issue1.labels.length > 0) {
+    similarities.labels = issue1.labels;
+  }
+
+  if (JSON.stringify(issue1.components.sort()) !== JSON.stringify(issue2.components.sort())) {
+    const commonComponents = issue1.components.filter((c) => issue2.components.includes(c));
+    const uniqueToIssue1 = issue1.components.filter((c) => !issue2.components.includes(c));
+    const uniqueToIssue2 = issue2.components.filter((c) => !issue1.components.includes(c));
+
+    differences.components = {
+      commonComponents,
+      uniqueToIssue1,
+      uniqueToIssue2,
+    };
+  } else if (issue1.components.length > 0) {
+    similarities.components = issue1.components;
+  }
+
+  // Compare metrics
+  differences.commentCount = {
+    issue1: issue1.commentCount,
+    issue2: issue2.commentCount,
+    difference: Math.abs(issue1.commentCount - issue2.commentCount),
+  };
+
+  // Age comparison
+  const created1 = new Date(issue1.created);
+  const created2 = new Date(issue2.created);
+  if (created1.getTime() !== created2.getTime()) {
+    differences.created = {
+      issue1: issue1.created,
+      issue2: issue2.created,
+      comparison: created1 < created2 ? `${issue1.key} was created earlier (older)` : `${issue2.key} was created earlier (older)`,
+    };
+  } else {
+    similarities.created = issue1.created;
+  }
+
+  // Last updated
+  const updated1 = new Date(issue1.updated);
+  const updated2 = new Date(issue2.updated);
+  if (updated1.getTime() !== updated2.getTime()) {
+    differences.updated = {
+      issue1: issue1.updated,
+      issue2: issue2.updated,
+      comparison: updated1 > updated2 ? `${issue1.key} was updated more recently` : `${issue2.key} was updated more recently`,
+    };
+  } else {
+    similarities.updated = issue1.updated;
+  }
+
+  return {
+    differences,
+    similarities,
+    summary: {
+      totalDifferences: Object.keys(differences).length,
+      totalSimilarities: Object.keys(similarities).length,
+      majorDifferences: Object.keys(differences).filter((k) => ["status", "priority", "assignee", "dueDate", "issuetype"].includes(k)),
+      isSummaryDifferent: issue1.summary !== issue2.summary,
+    },
+  };
+}
+
+export async function compareIssues(req, res, query, sessionId) {
+  try {
+    // Extract issue keys
+    const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "gi");
+    const matches = query.match(issueKeyPattern);
+
+    if (matches && matches.length >= 2) {
+      const issueKey1 = matches[0];
+      const issueKey2 = matches[1];
+
+      // Fetch both issues with all relevant fields
+      const [issue1Response, issue2Response] = await Promise.all([
+        axios.get(`${JIRA_URL}/rest/api/3/issue/${issueKey1}`, {
+          params: {
+            fields: "summary,status,assignee,priority,created,updated,duedate,issuetype,description,comment,labels,fixVersions,components",
+          },
+          auth,
+        }),
+        axios.get(`${JIRA_URL}/rest/api/3/issue/${issueKey2}`, {
+          params: {
+            fields: "summary,status,assignee,priority,created,updated,duedate,issuetype,description,comment,labels,fixVersions,components",
+          },
+          auth,
+        }),
+      ]);
+
+      const issue1 = issue1Response.data;
+      const issue2 = issue2Response.data;
+
+      // Analyze what aspects the user might be interested in
+      const comparisonFocus = analyzeComparisonFocus(query);
+
+      // Get user preferences
+      const memory = getConversationMemory(sessionId);
+      const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
+
+      // Format the comparison
+      try {
+        // Extract data to compare
+        const issue1Data = extractIssueData(issue1);
+        const issue2Data = extractIssueData(issue2);
+
+        // Find similarities and differences
+        const comparison = compareIssueData(issue1Data, issue2Data);
+
+        // Generate a prompt based on focus and preferences
+        const systemPrompt = `
+          You are a helpful Jira assistant comparing two issues. Create a clear, ${
+            verbosityLevel === "concise"
+              ? "brief and direct"
+              : verbosityLevel === "detailed"
+              ? "comprehensive and thorough"
+              : "balanced and insightful"
+          } comparison highlighting the ${comparisonFocus ? `differences in ${comparisonFocus}` : "similarities and differences"}.
+          
+          Format the response with markdown, organizing the comparison in a way that makes the differences easy to spot.
+          ${
+            verbosityLevel === "concise"
+              ? "Focus only on the key differences and use a compact format."
+              : verbosityLevel === "detailed"
+              ? "Provide a detailed analysis of both similarities and differences with explanations of their significance."
+              : "Highlight important differences while also noting significant similarities."
+          }
+          
+          Include a brief analysis of what the comparison reveals (e.g., "Issue 2 has higher priority but later due date").
+          ${comparisonFocus ? `Since the user seems interested in comparing ${comparisonFocus}, emphasize that aspect.` : ""}
+        `;
+
+        const aiResponse = await openai.chat.completions.create({
+          model: "gpt-4",
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `Compare these two issues: ${JSON.stringify({
+                issue1: issue1Data,
+                issue2: issue2Data,
+                comparison: comparison,
+              })}`,
+            },
+          ],
+          temperature: 0.7,
+        });
+
+        const formattedResponse = aiResponse.choices[0].message.content.trim();
+
+        // Store in conversation memory
+        if (memory) {
+          memory.lastResponse = formattedResponse;
+        }
+
+        return res.json({
+          message: formattedResponse,
+          meta: {
+            intent: "COMPARE_ISSUES",
+            issueKeys: [issueKey1, issueKey2],
+            focus: comparisonFocus,
+          },
+        });
+      } catch (aiError) {
+        console.error("Error generating comparison response:", aiError);
+
+        // Create a simple comparison if AI fails
+        let formattedResponse = `## Comparison: ${issueKey1} vs ${issueKey2}\n\n`;
+
+        // Two-column comparison for key fields
+        formattedResponse += `| Field | ${createJiraLink(issueKey1)} | ${issueKey2} |\n`;
+        formattedResponse += `| ----- | ----- | ----- |\n`;
+        formattedResponse += `| Summary | ${issue1.fields.summary} | ${issue2.fields.summary} |\n`;
+        formattedResponse += `| Status | ${issue1.fields.status?.name || "Unknown"} | ${issue2.fields.status?.name || "Unknown"} |\n`;
+        formattedResponse += `| Assignee | ${issue1.fields.assignee?.displayName || "Unassigned"} | ${
+          issue2.fields.assignee?.displayName || "Unassigned"
+        } |\n`;
+        formattedResponse += `| Priority | ${issue1.fields.priority?.name || "Not set"} | ${issue2.fields.priority?.name || "Not set"} |\n`;
+        formattedResponse += `| Type | ${issue1.fields.issuetype?.name || "Unknown"} | ${issue2.fields.issuetype?.name || "Unknown"} |\n`;
+
+        if (issue1.fields.duedate || issue2.fields.duedate) {
+          formattedResponse += `| Due Date | ${issue1.fields.duedate ? new Date(issue1.fields.duedate).toLocaleDateString() : "None"} | ${
+            issue2.fields.duedate ? new Date(issue2.fields.duedate).toLocaleDateString() : "None"
+          } |\n`;
+        }
+
+        // Highlight key differences
+        formattedResponse += `\n### Key Differences\n\n`;
+
+        if (issue1.fields.status?.name !== issue2.fields.status?.name) {
+          formattedResponse += `• **Status**: ${createJiraLink(issueKey1)} is in ${issue1.fields.status?.name || "Unknown"} while ${issueKey2} is in ${
+            issue2.fields.status?.name || "Unknown"
+          }\n`;
+        }
+
+        if ((issue1.fields.assignee?.displayName || "Unassigned") !== (issue2.fields.assignee?.displayName || "Unassigned")) {
+          formattedResponse += `• **Assignee**: ${issueKey1} is assigned to ${
+            issue1.fields.assignee?.displayName || "Unassigned"
+          } while ${issueKey2} is assigned to ${issue2.fields.assignee?.displayName || "Unassigned"}\n`;
+        }
+
+        if ((issue1.fields.priority?.name || "Not set") !== (issue2.fields.priority?.name || "Not set")) {
+          formattedResponse += `• **Priority**: ${issueKey1} is ${
+            issue1.fields.priority?.name || "Not set"
+          } priority while ${issueKey2} is ${issue2.fields.priority?.name || "Not set"} priority\n`;
+        }
+
+        // Store response
+        if (memory) {
+          memory.lastResponse = formattedResponse;
+        }
+
+        return res.json({
+          message: formattedResponse,
+          meta: {
+            intent: "COMPARE_ISSUES",
+            issueKeys: [issueKey1, issueKey2],
+          },
+        });
+      }
+    }
+
+    return null; // Continue with normal processing if we couldn't find two issues
+  } catch (error) {
+    console.error("Error comparing issues:", error);
+    return null; // Continue with normal processing
+  }
+}
+
+export function analyzeComparisonFocus(query) {
+  // Check for focus on specific aspects
+  if (/status|state|progress/i.test(query)) {
+    return "status";
+  } else if (/priority|importance|urgency/i.test(query)) {
+    return "priority";
+  } else if (/assign|who|person|responsible/i.test(query)) {
+    return "assignee";
+  } else if (/due|deadline|when|date/i.test(query)) {
+    return "due dates";
+  } else if (/time|duration|how long/i.test(query)) {
+    return "timeframes";
+  } else if (/comment|said|mentioned/i.test(query)) {
+    return "comments";
+  } else if (/label|tag|category/i.test(query)) {
+    return "labels";
+  } else if (/component|part|module/i.test(query)) {
+    return "components";
+  }
+
+  return null; // No specific focus
+}
+
+export function handleQueryError(error, query, sessionId) {
+  console.error("Error details:", error);
+
+  // Create a friendly error message based on the type of error
+  if (error.response && error.response.status === 400) {
+    return "I'm having trouble understanding that query. Could you try rephrasing it?";
+  } else if (error.response && error.response.status === 401) {
+    return "I'm having trouble accessing the Jira data right now. This might be an authentication issue.";
+  } else if (error.response && error.response.status === 404) {
+    return "I couldn't find what you're looking for. Please check if the issue or project exists.";
+  } else if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND") {
+    return "I can't connect to Jira at the moment. Please check your connection and try again later.";
+  } else if (error.message && error.message.includes("timeout")) {
+    return "The request took too long to complete. Please try a simpler query or try again later.";
+  } else if (error.message && error.message.includes("JQL")) {
+    return "I couldn't properly format your query. Could you try phrasing it differently?";
+  }
+
+  // For general fallback errors
+  const generalErrorMessages = [
+    "I encountered an issue while processing your request. Could you try again?",
+    "Something went wrong on my end. Let's try a different approach.",
+    "I'm having trouble with that query. Could you rephrase it or try something else?",
+    "I wasn't able to complete that request successfully. Let's try something simpler.",
+  ];
+
+  return generalErrorMessages[Math.floor(Math.random() * generalErrorMessages.length)];
+}
+
+export function createFallbackResponse(data, intent, query) {
+  // Default fallback
+  let response = `I found ${data.issues ? data.issues.length : 0} issues related to your query.`;
+
+  if (!data.issues || data.issues.length === 0) {
+    return "I couldn't find any issues matching your criteria.";
+  }
+
+  // Add some basic formatting based on intent
+  if (intent === "PROJECT_STATUS") {
+    response = `## Project Status Overview\n\n`;
+
+    // Group by status
+    const statusCounts = {};
+    data.issues.forEach((issue) => {
+      const status = issue.fields.status?.name || "Unknown";
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
+
+    // Add status breakdown
+    for (const [status, count] of Object.entries(statusCounts)) {
+      response += `• **${status}**: ${count} issues\n`;
+    }
+
+    // Add some recent issues
+    response += `\n### Recent Activity\n`;
+    for (let i = 0; i < Math.min(3, data.issues.length); i++) {
+      const issue = data.issues[i];
+      const status = issue.fields.status?.name || "Unknown";
+      response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
+    }
+  } else if (intent === "TASK_DETAILS" && data.issues.length > 0) {
+    const issue = data.issues[0];
+    const status = issue.fields.status?.name || "Unknown";
+    const assignee = issue.fields.assignee?.displayName || "Unassigned";
+    const summary = issue.fields.summary || "No summary";
+    const priority = issue.fields.priority?.name || "Not set";
+
+    const title = createJiraLink(issue.key);
+    response =
+      `## ${title}: ${summary}\n\n` + `**Status**: ${status}\n` + `**Priority**: ${priority}\n` + `**Assignee**: ${assignee}\n`;
+  } else {
+    // Default formatting for other intents
+    response += "\n\n";
+
+    // Group issues by status
+    const groupedByStatus = {};
+    data.issues.forEach((issue) => {
+      const status = issue.fields.status?.name || "Unknown";
+      if (!groupedByStatus[status]) {
+        groupedByStatus[status] = [];
+      }
+      groupedByStatus[status].push(issue);
+    });
+
+    // Format issues by status group
+    for (const [status, issues] of Object.entries(groupedByStatus)) {
+      response += `### ${status}\n`;
+
+      issues.slice(0, 5).forEach((issue) => {
+        const assignee = issue.fields.assignee?.displayName || "Unassigned";
+        response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Assigned to: ${assignee})\n`;
+      });
+
+      if (issues.length > 5) {
+        response += `... and ${issues.length - 5} more ${status} issues.\n`;
+      }
+
+      response += "\n";
+    }
+  }
+
+  return response;
+}

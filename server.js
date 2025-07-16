@@ -6,13 +6,22 @@ import { OpenAI } from "openai";
 import { openai } from "./config/openaiConfig.js";
 import * as cheerio from "cheerio";
 import { safeJqlTemplates } from "./config/jiraConfig.js";
-import { fallbackGenerateJQL, generateJQL, getProjectStatusOverview, getMostRecentTaskDetails } from "./services/jiraService.js";
+import { 
+  fallbackGenerateJQL, 
+  generateJQL, 
+  getProjectStatusOverview, 
+  getMostRecentTaskDetails, 
+  getProjectTimeline,
+  getTeamWorkload,
+  getAdvancedTimeline,
+  getIssueTypes
+} from "./services/jiraService.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { URL } from "url";
 import { analyzeQueryIntent } from "./services/intentService.js";
 import { getConversationMemory, updateConversationMemory, conversationMemory } from "./memory/conversationMemory.js";
-import { getUserContext, detectFollowUpQuery, applyUserContext, getPersonalizedSystemPrompt } from "./memory/userContext.js";
+import { getUserContext, detectFollowUpQuery, applyUserContext, getPersonalizedSystemPrompt, determineResultsLimit } from "./memory/userContext.js";
 import { 
   createJiraLink,
   createJiraFilterLink,
@@ -20,8 +29,10 @@ import {
   extractTextFromADF,
   preprocessQuery,
   determineFieldsForIntent,
-
+  compareIssues
  } from "./utils/jiraUtils.js";
+ import { getDetailedWorkloadAnalysis } from "./services/workloadService.js";
+ import { generateResponse } from "./utils/queryContextUtils.js";
 
 // Load environment variables
 dotenv.config();
@@ -970,2118 +981,2118 @@ console.log("process.env.JIRA_PROJECT_KEY", process.env.JIRA_PROJECT_KEY);
 // }
 
 // Special handler for timeline queries
-async function getProjectTimeline(req, res, query, sessionId) {
-  try {
-    // Determine timeline type
-    let timeframeDesc = "upcoming";
-    let jql = "";
+// async function getProjectTimeline(req, res, query, sessionId) {
+//   try {
+//     // Determine timeline type
+//     let timeframeDesc = "upcoming";
+//     let jql = "";
 
-    if (/past|previous|last|recent/i.test(query)) {
-      timeframeDesc = "past";
-      jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate <= now() AND duedate >= -30d ORDER BY duedate DESC`;
-    } else if (/overdue|late|miss(ed)?|behind/i.test(query)) {
-      timeframeDesc = "overdue";
-      jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate < now() AND status != "Done" ORDER BY duedate ASC`;
-    } else if (/this week|current week/i.test(query)) {
-      timeframeDesc = "this week";
-      jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfWeek() AND duedate <= endOfWeek() ORDER BY duedate ASC`;
-    } else if (/next week/i.test(query)) {
-      timeframeDesc = "next week";
-      jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate > endOfWeek() AND duedate <= endOfWeek(1) ORDER BY duedate ASC`;
-    } else if (/this month|current month/i.test(query)) {
-      timeframeDesc = "this month";
-      jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfMonth() AND duedate <= endOfMonth() ORDER BY duedate ASC`;
-    } else {
-      // Default to upcoming timeline
-      jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= now() ORDER BY duedate ASC`;
-    }
+//     if (/past|previous|last|recent/i.test(query)) {
+//       timeframeDesc = "past";
+//       jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate <= now() AND duedate >= -30d ORDER BY duedate DESC`;
+//     } else if (/overdue|late|miss(ed)?|behind/i.test(query)) {
+//       timeframeDesc = "overdue";
+//       jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate < now() AND status != "Done" ORDER BY duedate ASC`;
+//     } else if (/this week|current week/i.test(query)) {
+//       timeframeDesc = "this week";
+//       jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfWeek() AND duedate <= endOfWeek() ORDER BY duedate ASC`;
+//     } else if (/next week/i.test(query)) {
+//       timeframeDesc = "next week";
+//       jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate > endOfWeek() AND duedate <= endOfWeek(1) ORDER BY duedate ASC`;
+//     } else if (/this month|current month/i.test(query)) {
+//       timeframeDesc = "this month";
+//       jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfMonth() AND duedate <= endOfMonth() ORDER BY duedate ASC`;
+//     } else {
+//       // Default to upcoming timeline
+//       jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= now() ORDER BY duedate ASC`;
+//     }
 
-    // Execute timeline query
-    const timelineResponse = await axios
-      .get(`${JIRA_URL}/rest/api/3/search`, {
-        params: {
-          jql: jql,
-          maxResults: 20,
-          fields: "summary,status,assignee,priority,duedate",
-        },
-        auth,
-      })
-      .catch((error) => {
-        console.error("Timeline JQL failed:", error);
-        // Try a simpler fallback
-        return axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS NOT EMPTY ORDER BY duedate ASC`,
-            maxResults: 20,
-            fields: "summary,status,assignee,priority,duedate",
-          },
-          auth,
-        });
-      });
+//     // Execute timeline query
+//     const timelineResponse = await axios
+//       .get(`${JIRA_URL}/rest/api/3/search`, {
+//         params: {
+//           jql: jql,
+//           maxResults: 20,
+//           fields: "summary,status,assignee,priority,duedate",
+//         },
+//         auth,
+//       })
+//       .catch((error) => {
+//         console.error("Timeline JQL failed:", error);
+//         // Try a simpler fallback
+//         return axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS NOT EMPTY ORDER BY duedate ASC`,
+//             maxResults: 20,
+//             fields: "summary,status,assignee,priority,duedate",
+//           },
+//           auth,
+//         });
+//       });
 
-    if (timelineResponse.data && timelineResponse.data.issues && timelineResponse.data.issues.length > 0) {
-      // Group issues by date
-      const issuesByDate = {};
-      const allIssues = timelineResponse.data.issues;
+//     if (timelineResponse.data && timelineResponse.data.issues && timelineResponse.data.issues.length > 0) {
+//       // Group issues by date
+//       const issuesByDate = {};
+//       const allIssues = timelineResponse.data.issues;
 
-      allIssues.forEach((issue) => {
-        if (!issue.fields.duedate) return;
+//       allIssues.forEach((issue) => {
+//         if (!issue.fields.duedate) return;
 
-        const dueDate = new Date(issue.fields.duedate);
+//         const dueDate = new Date(issue.fields.duedate);
 
-        // Format by month and year
-        const dateKey = dueDate.toLocaleDateString("en-US", {
-          month: "long",
-          year: "numeric",
-        });
+//         // Format by month and year
+//         const dateKey = dueDate.toLocaleDateString("en-US", {
+//           month: "long",
+//           year: "numeric",
+//         });
 
-        if (!issuesByDate[dateKey]) {
-          issuesByDate[dateKey] = [];
-        }
+//         if (!issuesByDate[dateKey]) {
+//           issuesByDate[dateKey] = [];
+//         }
 
-        issuesByDate[dateKey].push(issue);
-      });
+//         issuesByDate[dateKey].push(issue);
+//       });
 
-      // Try to use AI to create a natural response
-      try {
-        const timelineData = {
-          timeframe: timeframeDesc,
-          totalDueDatesCount: allIssues.length,
-          timelineGroups: Object.entries(issuesByDate).map(([date, issues]) => ({
-            date,
-            count: issues.length,
-            examples: issues.slice(0, 5).map((issue) => ({
-              key: issue.key,
-              summary: issue.fields.summary,
-              status: issue.fields.status?.name || "Unknown",
-              priority: issue.fields.priority?.name || "Unknown",
-              assignee: issue.fields.assignee?.displayName || "Unassigned",
-            })),
-          })),
-        };
+//       // Try to use AI to create a natural response
+//       try {
+//         const timelineData = {
+//           timeframe: timeframeDesc,
+//           totalDueDatesCount: allIssues.length,
+//           timelineGroups: Object.entries(issuesByDate).map(([date, issues]) => ({
+//             date,
+//             count: issues.length,
+//             examples: issues.slice(0, 5).map((issue) => ({
+//               key: issue.key,
+//               summary: issue.fields.summary,
+//               status: issue.fields.status?.name || "Unknown",
+//               priority: issue.fields.priority?.name || "Unknown",
+//               assignee: issue.fields.assignee?.displayName || "Unassigned",
+//             })),
+//           })),
+//         };
 
-        const prompt = `
-          You are a helpful Jira assistant providing timeline information about a project.
+//         const prompt = `
+//           You are a helpful Jira assistant providing timeline information about a project.
           
-          Create a conversational, helpful response about the ${timeframeDesc} timeline.
-          Organize information by date and highlight important upcoming deadlines.
+//           Create a conversational, helpful response about the ${timeframeDesc} timeline.
+//           Organize information by date and highlight important upcoming deadlines.
           
-          Make your response conversational and easy to read, not just a list of data.
-          Use markdown formatting, especially for grouping items by date.
-          Limit details to what's necessary - be concise but informative.
-        `;
+//           Make your response conversational and easy to read, not just a list of data.
+//           Use markdown formatting, especially for grouping items by date.
+//           Limit details to what's necessary - be concise but informative.
+//         `;
 
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: prompt },
-            { role: "user", content: `Timeline data: ${JSON.stringify(timelineData)}` },
-          ],
-          temperature: 0.7,
-        });
+//         const aiResponse = await openai.chat.completions.create({
+//           model: "gpt-4",
+//           messages: [
+//             { role: "system", content: prompt },
+//             { role: "user", content: `Timeline data: ${JSON.stringify(timelineData)}` },
+//           ],
+//           temperature: 0.7,
+//         });
 
-        const formattedResponse = aiResponse.choices[0].message.content;
+//         const formattedResponse = aiResponse.choices[0].message.content;
 
-        // Store in conversation memory
-        if (conversationMemory[sessionId]) {
-          conversationMemory[sessionId].lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (conversationMemory[sessionId]) {
+//           conversationMemory[sessionId].lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "TIMELINE",
-            timeframe: timeframeDesc,
-          },
-        });
-      } catch (aiError) {
-        console.error("Error generating AI timeline:", aiError);
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "TIMELINE",
+//             timeframe: timeframeDesc,
+//           },
+//         });
+//       } catch (aiError) {
+//         console.error("Error generating AI timeline:", aiError);
 
-        // Fallback to a simpler format
-        let formattedResponse = `## Project Timeline (${timeframeDesc})\n\n`;
+//         // Fallback to a simpler format
+//         let formattedResponse = `## Project Timeline (${timeframeDesc})\n\n`;
 
-        if (Object.keys(issuesByDate).length === 0) {
-          formattedResponse += "No issues with due dates found in this timeframe.";
-        } else {
-          Object.entries(issuesByDate).forEach(([dateGroup, issues]) => {
-            formattedResponse += `### ${dateGroup}\n`;
+//         if (Object.keys(issuesByDate).length === 0) {
+//           formattedResponse += "No issues with due dates found in this timeframe.";
+//         } else {
+//           Object.entries(issuesByDate).forEach(([dateGroup, issues]) => {
+//             formattedResponse += `### ${dateGroup}\n`;
 
-            issues.slice(0, 5).forEach((issue) => {
-              const status = issue.fields.status?.name || "Unknown";
-              const assignee = issue.fields.assignee?.displayName || "Unassigned";
-              const date = new Date(issue.fields.duedate).toLocaleDateString();
+//             issues.slice(0, 5).forEach((issue) => {
+//               const status = issue.fields.status?.name || "Unknown";
+//               const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//               const date = new Date(issue.fields.duedate).toLocaleDateString();
 
-              formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Due: ${date}, ${status}, Assigned to: ${assignee})\n`;
-            });
+//               formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Due: ${date}, ${status}, Assigned to: ${assignee})\n`;
+//             });
 
-            if (issues.length > 5) {
-              formattedResponse += `... and ${issues.length - 5} more items due in ${dateGroup}.\n`;
-            }
+//             if (issues.length > 5) {
+//               formattedResponse += `... and ${issues.length - 5} more items due in ${dateGroup}.\n`;
+//             }
 
-            formattedResponse += "\n";
-          });
-        }
+//             formattedResponse += "\n";
+//           });
+//         }
 
-        // Store in conversation memory
-        if (conversationMemory[sessionId]) {
-          conversationMemory[sessionId].lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (conversationMemory[sessionId]) {
+//           conversationMemory[sessionId].lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "TIMELINE",
-            timeframe: timeframeDesc,
-          },
-        });
-      }
-    }
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "TIMELINE",
+//             timeframe: timeframeDesc,
+//           },
+//         });
+//       }
+//     }
 
-    return null; // Continue with normal processing if no issues
-  } catch (error) {
-    console.error("Error handling timeline query:", error);
-    return null; // Continue with normal processing
-  }
-}
+//     return null; // Continue with normal processing if no issues
+//   } catch (error) {
+//     console.error("Error handling timeline query:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Special handler for team workload
-async function getTeamWorkload(req, res, query, sessionId) {
-  try {
-    // Get assignments for all team members
-    const workloadResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
-      params: {
-        jql: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS NOT EMPTY AND status != "Done"`,
-        maxResults: 100,
-        fields: "summary,status,assignee,priority",
-      },
-      auth,
-    });
+// async function getTeamWorkload(req, res, query, sessionId) {
+//   try {
+//     // Get assignments for all team members
+//     const workloadResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//       params: {
+//         jql: `project = ${process.env.JIRA_PROJECT_KEY} AND assignee IS NOT EMPTY AND status != "Done"`,
+//         maxResults: 100,
+//         fields: "summary,status,assignee,priority",
+//       },
+//       auth,
+//     });
 
-    if (workloadResponse.data && workloadResponse.data.issues && workloadResponse.data.issues.length > 0) {
-      // Group issues by assignee
-      const issuesByAssignee = {};
-      const issues = workloadResponse.data.issues;
+//     if (workloadResponse.data && workloadResponse.data.issues && workloadResponse.data.issues.length > 0) {
+//       // Group issues by assignee
+//       const issuesByAssignee = {};
+//       const issues = workloadResponse.data.issues;
 
-      issues.forEach((issue) => {
-        const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//       issues.forEach((issue) => {
+//         const assignee = issue.fields.assignee?.displayName || "Unassigned";
 
-        if (!issuesByAssignee[assignee]) {
-          issuesByAssignee[assignee] = [];
-        }
+//         if (!issuesByAssignee[assignee]) {
+//           issuesByAssignee[assignee] = [];
+//         }
 
-        issuesByAssignee[assignee].push(issue);
-      });
+//         issuesByAssignee[assignee].push(issue);
+//       });
 
-      // Try to use AI to create a natural response
-      try {
-        const workloadData = {
-          totalActiveIssues: issues.length,
-          teamMembers: Object.entries(issuesByAssignee).map(([name, tasks]) => ({
-            name,
-            taskCount: tasks.length,
-            highPriorityCount: tasks.filter((t) => t.fields.priority?.name === "Highest" || t.fields.priority?.name === "High").length,
-            examples: tasks.slice(0, 3).map((task) => ({
-              key: task.key,
-              summary: task.fields.summary,
-              status: task.fields.status?.name,
-              priority: task.fields.priority?.name,
-            })),
-          })),
-        };
+//       // Try to use AI to create a natural response
+//       try {
+//         const workloadData = {
+//           totalActiveIssues: issues.length,
+//           teamMembers: Object.entries(issuesByAssignee).map(([name, tasks]) => ({
+//             name,
+//             taskCount: tasks.length,
+//             highPriorityCount: tasks.filter((t) => t.fields.priority?.name === "Highest" || t.fields.priority?.name === "High").length,
+//             examples: tasks.slice(0, 3).map((task) => ({
+//               key: task.key,
+//               summary: task.fields.summary,
+//               status: task.fields.status?.name,
+//               priority: task.fields.priority?.name,
+//             })),
+//           })),
+//         };
 
-        // Sort team members by workload
-        workloadData.teamMembers.sort((a, b) => b.taskCount - a.taskCount);
+//         // Sort team members by workload
+//         workloadData.teamMembers.sort((a, b) => b.taskCount - a.taskCount);
 
-        const prompt = `
-          You are a helpful Jira assistant analyzing team workload distribution.
+//         const prompt = `
+//           You are a helpful Jira assistant analyzing team workload distribution.
           
-          Create a conversational response about the team's current workload.
-          Highlight who has the most work, who has high priority items, and any imbalances.
+//           Create a conversational response about the team's current workload.
+//           Highlight who has the most work, who has high priority items, and any imbalances.
           
-          Be helpful and insightful, not just listing raw data.
-          Use markdown for formatting, especially for grouping by team member.
-          Be concise but provide meaningful insights about the workload distribution.
-        `;
+//           Be helpful and insightful, not just listing raw data.
+//           Use markdown for formatting, especially for grouping by team member.
+//           Be concise but provide meaningful insights about the workload distribution.
+//         `;
 
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: prompt },
-            { role: "user", content: `Team workload data: ${JSON.stringify(workloadData)}` },
-          ],
-          temperature: 0.7,
-        });
+//         const aiResponse = await openai.chat.completions.create({
+//           model: "gpt-4",
+//           messages: [
+//             { role: "system", content: prompt },
+//             { role: "user", content: `Team workload data: ${JSON.stringify(workloadData)}` },
+//           ],
+//           temperature: 0.7,
+//         });
 
-        const formattedResponse = aiResponse.choices[0].message.content;
+//         const formattedResponse = aiResponse.choices[0].message.content;
 
-        // Store in conversation memory
-        if (conversationMemory[sessionId]) {
-          conversationMemory[sessionId].lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (conversationMemory[sessionId]) {
+//           conversationMemory[sessionId].lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "WORKLOAD",
-          },
-        });
-      } catch (aiError) {
-        console.error("Error generating AI workload:", aiError);
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "WORKLOAD",
+//           },
+//         });
+//       } catch (aiError) {
+//         console.error("Error generating AI workload:", aiError);
 
-        // Fallback to a simpler format
-        let formattedResponse = `## Team Workload Overview\n\n`;
+//         // Fallback to a simpler format
+//         let formattedResponse = `## Team Workload Overview\n\n`;
 
-        // Sort assignees by workload
-        const sortedAssignees = Object.entries(issuesByAssignee).sort((a, b) => b[1].length - a[1].length);
+//         // Sort assignees by workload
+//         const sortedAssignees = Object.entries(issuesByAssignee).sort((a, b) => b[1].length - a[1].length);
 
-        formattedResponse += `Currently there are **${issues.length} active tasks** assigned across **${sortedAssignees.length} team members**.\n\n`;
+//         formattedResponse += `Currently there are **${issues.length} active tasks** assigned across **${sortedAssignees.length} team members**.\n\n`;
 
-        sortedAssignees.forEach(([assignee, tasks]) => {
-          const highPriorityCount = tasks.filter((t) => t.fields.priority?.name === "Highest" || t.fields.priority?.name === "High").length;
+//         sortedAssignees.forEach(([assignee, tasks]) => {
+//           const highPriorityCount = tasks.filter((t) => t.fields.priority?.name === "Highest" || t.fields.priority?.name === "High").length;
 
-          formattedResponse += `### ${assignee}\n`;
-          formattedResponse += `**Total tasks**: ${tasks.length}`;
+//           formattedResponse += `### ${assignee}\n`;
+//           formattedResponse += `**Total tasks**: ${tasks.length}`;
 
-          if (highPriorityCount > 0) {
-            formattedResponse += ` (${highPriorityCount} high priority)`;
-          }
+//           if (highPriorityCount > 0) {
+//             formattedResponse += ` (${highPriorityCount} high priority)`;
+//           }
 
-          formattedResponse += `\n\n`;
+//           formattedResponse += `\n\n`;
 
-          // Show examples of their tasks
-          tasks.slice(0, 3).forEach((task) => {
-            const status = task.fields.status?.name || "Unknown";
-            const priority = task.fields.priority?.name || "";
+//           // Show examples of their tasks
+//           tasks.slice(0, 3).forEach((task) => {
+//             const status = task.fields.status?.name || "Unknown";
+//             const priority = task.fields.priority?.name || "";
 
-            formattedResponse += `• ${task.key}: ${task.fields.summary} (${status}`;
-            if (priority) formattedResponse += `, ${priority}`;
-            formattedResponse += `)\n`;
-          });
+//             formattedResponse += `• ${task.key}: ${task.fields.summary} (${status}`;
+//             if (priority) formattedResponse += `, ${priority}`;
+//             formattedResponse += `)\n`;
+//           });
 
-          if (tasks.length > 3) {
-            formattedResponse += `... and ${tasks.length - 3} more tasks.\n`;
-          }
+//           if (tasks.length > 3) {
+//             formattedResponse += `... and ${tasks.length - 3} more tasks.\n`;
+//           }
 
-          formattedResponse += `\n`;
-        });
+//           formattedResponse += `\n`;
+//         });
 
-        // Store in conversation memory
-        if (conversationMemory[sessionId]) {
-          conversationMemory[sessionId].lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (conversationMemory[sessionId]) {
+//           conversationMemory[sessionId].lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "WORKLOAD",
-          },
-        });
-      }
-    }
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "WORKLOAD",
+//           },
+//         });
+//       }
+//     }
 
-    return null; // Continue with normal processing if no issues
-  } catch (error) {
-    console.error("Error handling workload query:", error);
-    return null; // Continue with normal processing
-  }
-}
+//     return null; // Continue with normal processing if no issues
+//   } catch (error) {
+//     console.error("Error handling workload query:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Special handler for advanced timeline queries
-async function getAdvancedTimeline(req, res, query, sessionId) {
-  try {
-    // Extract time parameters from the query
-    const timeParams = extractTimeParameters(query);
-    console.log("Extracted time parameters:", timeParams);
+// async function getAdvancedTimeline(req, res, query, sessionId) {
+//   try {
+//     // Extract time parameters from the query
+//     const timeParams = extractTimeParameters(query);
+//     console.log("Extracted time parameters:", timeParams);
 
-    // Default to upcoming if no specific timeframe mentioned
-    if (!timeParams.type) {
-      timeParams.type = "upcoming";
-    }
+//     // Default to upcoming if no specific timeframe mentioned
+//     if (!timeParams.type) {
+//       timeParams.type = "upcoming";
+//     }
 
-    // Build appropriate JQL based on detailed time parameters
-    let jql = "";
+//     // Build appropriate JQL based on detailed time parameters
+//     let jql = "";
 
-    switch (timeParams.type) {
-      case "thisWeek":
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfWeek() AND duedate <= endOfWeek() ORDER BY duedate ASC`;
-        break;
-      case "nextWeek":
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate > endOfWeek() AND duedate <= endOfWeek(1) ORDER BY duedate ASC`;
-        break;
-      case "thisMonth":
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfMonth() AND duedate <= endOfMonth() ORDER BY duedate ASC`;
-        break;
-      case "nextMonth":
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate > endOfMonth() AND duedate <= endOfMonth(1) ORDER BY duedate ASC`;
-        break;
-      case "overdue":
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate < now() AND status != "Done" ORDER BY duedate ASC`;
-        break;
-      case "noDate":
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS EMPTY AND status != "Done" ORDER BY created DESC`;
-        break;
-      case "upcoming":
-      default:
-        jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= now() ORDER BY duedate ASC`;
-    }
+//     switch (timeParams.type) {
+//       case "thisWeek":
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfWeek() AND duedate <= endOfWeek() ORDER BY duedate ASC`;
+//         break;
+//       case "nextWeek":
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate > endOfWeek() AND duedate <= endOfWeek(1) ORDER BY duedate ASC`;
+//         break;
+//       case "thisMonth":
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= startOfMonth() AND duedate <= endOfMonth() ORDER BY duedate ASC`;
+//         break;
+//       case "nextMonth":
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate > endOfMonth() AND duedate <= endOfMonth(1) ORDER BY duedate ASC`;
+//         break;
+//       case "overdue":
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate < now() AND status != "Done" ORDER BY duedate ASC`;
+//         break;
+//       case "noDate":
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS EMPTY AND status != "Done" ORDER BY created DESC`;
+//         break;
+//       case "upcoming":
+//       default:
+//         jql = `project = ${process.env.JIRA_PROJECT_KEY} AND duedate >= now() ORDER BY duedate ASC`;
+//     }
 
-    // Apply additional filters if present
-    if (timeParams.assignee) {
-      jql += ` AND assignee ~ "${timeParams.assignee}"`;
-    }
+//     // Apply additional filters if present
+//     if (timeParams.assignee) {
+//       jql += ` AND assignee ~ "${timeParams.assignee}"`;
+//     }
 
-    if (timeParams.issueType) {
-      jql += ` AND issuetype = "${timeParams.issueType}"`;
-    }
+//     if (timeParams.issueType) {
+//       jql += ` AND issuetype = "${timeParams.issueType}"`;
+//     }
 
-    if (timeParams.priority) {
-      jql += ` AND priority = "${timeParams.priority}"`;
-    }
+//     if (timeParams.priority) {
+//       jql += ` AND priority = "${timeParams.priority}"`;
+//     }
 
-    // Execute timeline query
-    const timelineResponse = await axios
-      .get(`${JIRA_URL}/rest/api/3/search`, {
-        params: {
-          jql: jql,
-          maxResults: 50,
-          fields: "summary,status,assignee,priority,duedate,created,updated,issuetype",
-        },
-        auth,
-      })
-      .catch((error) => {
-        console.error("Timeline JQL failed:", error);
-        // Try a simpler fallback
-        return axios.get(`${JIRA_URL}/rest/api/3/search`, {
-          params: {
-            jql: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS NOT EMPTY ORDER BY duedate ASC`,
-            maxResults: 30,
-            fields: "summary,status,assignee,priority,duedate",
-          },
-          auth,
-        });
-      });
+//     // Execute timeline query
+//     const timelineResponse = await axios
+//       .get(`${JIRA_URL}/rest/api/3/search`, {
+//         params: {
+//           jql: jql,
+//           maxResults: 50,
+//           fields: "summary,status,assignee,priority,duedate,created,updated,issuetype",
+//         },
+//         auth,
+//       })
+//       .catch((error) => {
+//         console.error("Timeline JQL failed:", error);
+//         // Try a simpler fallback
+//         return axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//           params: {
+//             jql: `project = ${process.env.JIRA_PROJECT_KEY} AND duedate IS NOT EMPTY ORDER BY duedate ASC`,
+//             maxResults: 30,
+//             fields: "summary,status,assignee,priority,duedate",
+//           },
+//           auth,
+//         });
+//       });
 
-    if (timelineResponse.data && timelineResponse.data.issues) {
-      // Group issues by date for better organization
-      const issuesByDate = organizeTimelineByDate(timelineResponse.data.issues, timeParams);
-      const memory = getConversationMemory(sessionId);
+//     if (timelineResponse.data && timelineResponse.data.issues) {
+//       // Group issues by date for better organization
+//       const issuesByDate = organizeTimelineByDate(timelineResponse.data.issues, timeParams);
+//       const memory = getConversationMemory(sessionId);
 
-      try {
-        // Generate a more natural, structured timeline response
-        const timelineData = {
-          timeframe: getTimeframeDescription(timeParams),
-          totalCount: timelineResponse.data.total,
-          issuesWithDueDates: timelineResponse.data.issues.filter((i) => i.fields.duedate).length,
-          issuesWithoutDueDates: timelineResponse.data.issues.filter((i) => !i.fields.duedate).length,
-          timelineGroups: Object.entries(issuesByDate).map(([date, issues]) => ({
-            date,
-            count: issues.length,
-            examples: issues.slice(0, 5).map((issue) => ({
-              key: issue.key,
-              summary: issue.fields.summary,
-              status: issue.fields.status?.name || "Unknown",
-              priority: issue.fields.priority?.name || "Unknown",
-              assignee: issue.fields.assignee?.displayName || "Unassigned",
-              dueDate: issue.fields.duedate ? new Date(issue.fields.duedate).toLocaleDateString() : null,
-            })),
-            remainingCount: issues.length > 5 ? issues.length - 5 : 0,
-          })),
-        };
+//       try {
+//         // Generate a more natural, structured timeline response
+//         const timelineData = {
+//           timeframe: getTimeframeDescription(timeParams),
+//           totalCount: timelineResponse.data.total,
+//           issuesWithDueDates: timelineResponse.data.issues.filter((i) => i.fields.duedate).length,
+//           issuesWithoutDueDates: timelineResponse.data.issues.filter((i) => !i.fields.duedate).length,
+//           timelineGroups: Object.entries(issuesByDate).map(([date, issues]) => ({
+//             date,
+//             count: issues.length,
+//             examples: issues.slice(0, 5).map((issue) => ({
+//               key: issue.key,
+//               summary: issue.fields.summary,
+//               status: issue.fields.status?.name || "Unknown",
+//               priority: issue.fields.priority?.name || "Unknown",
+//               assignee: issue.fields.assignee?.displayName || "Unassigned",
+//               dueDate: issue.fields.duedate ? new Date(issue.fields.duedate).toLocaleDateString() : null,
+//             })),
+//             remainingCount: issues.length > 5 ? issues.length - 5 : 0,
+//           })),
+//         };
 
-        // Determine if there are overdue items
-        const now = new Date();
-        const overdueItems = timelineResponse.data.issues.filter(
-          (issue) => issue.fields.duedate && new Date(issue.fields.duedate) < now && issue.fields.status.name !== "Done"
-        );
+//         // Determine if there are overdue items
+//         const now = new Date();
+//         const overdueItems = timelineResponse.data.issues.filter(
+//           (issue) => issue.fields.duedate && new Date(issue.fields.duedate) < now && issue.fields.status.name !== "Done"
+//         );
 
-        // Add warning if there are overdue items
-        if (overdueItems.length > 0) {
-          timelineData.overdueCount = overdueItems.length;
-          timelineData.overdueWarning = true;
-        }
+//         // Add warning if there are overdue items
+//         if (overdueItems.length > 0) {
+//           timelineData.overdueCount = overdueItems.length;
+//           timelineData.overdueWarning = true;
+//         }
 
-        // Add upcoming critical dates
-        const nextWeek = new Date();
-        nextWeek.setDate(now.getDate() + 7);
-        const dueSoonItems = timelineResponse.data.issues.filter(
-          (issue) => issue.fields.duedate && new Date(issue.fields.duedate) >= now && new Date(issue.fields.duedate) <= nextWeek
-        );
+//         // Add upcoming critical dates
+//         const nextWeek = new Date();
+//         nextWeek.setDate(now.getDate() + 7);
+//         const dueSoonItems = timelineResponse.data.issues.filter(
+//           (issue) => issue.fields.duedate && new Date(issue.fields.duedate) >= now && new Date(issue.fields.duedate) <= nextWeek
+//         );
 
-        if (dueSoonItems.length > 0) {
-          timelineData.dueSoonCount = dueSoonItems.length;
-          timelineData.nextDeadline = dueSoonItems.sort((a, b) => new Date(a.fields.duedate) - new Date(b.fields.duedate))[0];
-        }
+//         if (dueSoonItems.length > 0) {
+//           timelineData.dueSoonCount = dueSoonItems.length;
+//           timelineData.nextDeadline = dueSoonItems.sort((a, b) => new Date(a.fields.duedate) - new Date(b.fields.duedate))[0];
+//         }
 
-        // Get user's verbosity preference
-        const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
+//         // Get user's verbosity preference
+//         const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
 
-        // Adjust prompt based on user verbosity preference
-        const systemPrompt = `
-          You are a helpful Jira assistant providing timeline information about a project.
+//         // Adjust prompt based on user verbosity preference
+//         const systemPrompt = `
+//           You are a helpful Jira assistant providing timeline information about a project.
           
-          Create a ${
-            verbosityLevel === "concise"
-              ? "brief and direct"
-              : verbosityLevel === "detailed"
-              ? "comprehensive and thorough"
-              : "balanced and helpful"
-          } response about the ${timelineData.timeframe} timeline.
+//           Create a ${
+//             verbosityLevel === "concise"
+//               ? "brief and direct"
+//               : verbosityLevel === "detailed"
+//               ? "comprehensive and thorough"
+//               : "balanced and helpful"
+//           } response about the ${timelineData.timeframe} timeline.
           
-          ${
-            verbosityLevel === "concise"
-              ? "Focus only on the most essential deadlines and group items efficiently."
-              : verbosityLevel === "detailed"
-              ? "Provide a detailed breakdown by date, with context about each deadline group."
-              : "Organize information by date and highlight important upcoming deadlines."
-          }
+//           ${
+//             verbosityLevel === "concise"
+//               ? "Focus only on the most essential deadlines and group items efficiently."
+//               : verbosityLevel === "detailed"
+//               ? "Provide a detailed breakdown by date, with context about each deadline group."
+//               : "Organize information by date and highlight important upcoming deadlines."
+//           }
           
-          Make your response conversational and easy to read.
-          Use markdown formatting, especially for grouping items by date.
-          ${overdueItems.length > 0 ? "Draw attention to overdue items as they require urgent attention." : ""}
-          ${dueSoonItems.length > 0 ? "Highlight items due in the next week as they are approaching deadline." : ""}
+//           Make your response conversational and easy to read.
+//           Use markdown formatting, especially for grouping items by date.
+//           ${overdueItems.length > 0 ? "Draw attention to overdue items as they require urgent attention." : ""}
+//           ${dueSoonItems.length > 0 ? "Highlight items due in the next week as they are approaching deadline." : ""}
           
-          ${
-            timelineData.timelineGroups.length === 0
-              ? "No issues with due dates were found for this timeframe. Explain this in a helpful way."
-              : ""
-          }
-        `;
+//           ${
+//             timelineData.timelineGroups.length === 0
+//               ? "No issues with due dates were found for this timeframe. Explain this in a helpful way."
+//               : ""
+//           }
+//         `;
 
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `Timeline data: ${JSON.stringify(timelineData)}` },
-          ],
-          temperature: 0.7,
-        });
+//         const aiResponse = await openai.chat.completions.create({
+//           model: "gpt-4",
+//           messages: [
+//             { role: "system", content: systemPrompt },
+//             { role: "user", content: `Timeline data: ${JSON.stringify(timelineData)}` },
+//           ],
+//           temperature: 0.7,
+//         });
 
-        const formattedResponse = aiResponse.choices[0].message.content;
+//         const formattedResponse = aiResponse.choices[0].message.content;
 
-        // Store in conversation memory
-        if (memory) {
-          memory.lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (memory) {
+//           memory.lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "TIMELINE",
-            timeframe: timelineData.timeframe,
-            overdueItems: overdueItems.length,
-            upcomingDeadlines: dueSoonItems.length,
-          },
-        });
-      } catch (aiError) {
-        console.error("Error generating AI timeline:", aiError);
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "TIMELINE",
+//             timeframe: timelineData.timeframe,
+//             overdueItems: overdueItems.length,
+//             upcomingDeadlines: dueSoonItems.length,
+//           },
+//         });
+//       } catch (aiError) {
+//         console.error("Error generating AI timeline:", aiError);
 
-        // Fallback to a structured format
-        let formattedResponse = `## Project Timeline (${getTimeframeDescription(timeParams)})\n\n`;
+//         // Fallback to a structured format
+//         let formattedResponse = `## Project Timeline (${getTimeframeDescription(timeParams)})\n\n`;
 
-        if (Object.keys(issuesByDate).length === 0) {
-          formattedResponse += "No issues with due dates found in this timeframe.";
-        } else {
-          if (overdueItems.length > 0) {
-            formattedResponse += `⚠️ **Warning**: There are ${overdueItems.length} overdue items that need attention.\n\n`;
-          }
+//         if (Object.keys(issuesByDate).length === 0) {
+//           formattedResponse += "No issues with due dates found in this timeframe.";
+//         } else {
+//           if (overdueItems.length > 0) {
+//             formattedResponse += `⚠️ **Warning**: There are ${overdueItems.length} overdue items that need attention.\n\n`;
+//           }
 
-          Object.entries(issuesByDate).forEach(([dateGroup, issues]) => {
-            formattedResponse += `### ${dateGroup}\n`;
+//           Object.entries(issuesByDate).forEach(([dateGroup, issues]) => {
+//             formattedResponse += `### ${dateGroup}\n`;
 
-            issues.slice(0, 5).forEach((issue) => {
-              const status = issue.fields.status?.name || "Unknown";
-              const assignee = issue.fields.assignee?.displayName || "Unassigned";
-              const date = issue.fields.duedate ? new Date(issue.fields.duedate).toLocaleDateString() : "No due date";
-              const priority = issue.fields.priority?.name || "";
+//             issues.slice(0, 5).forEach((issue) => {
+//               const status = issue.fields.status?.name || "Unknown";
+//               const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//               const date = issue.fields.duedate ? new Date(issue.fields.duedate).toLocaleDateString() : "No due date";
+//               const priority = issue.fields.priority?.name || "";
 
-              formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status}, ${
-                priority ? priority + ", " : ""
-              }Assigned to: ${assignee})\n`;
-            });
+//               formattedResponse += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status}, ${
+//                 priority ? priority + ", " : ""
+//               }Assigned to: ${assignee})\n`;
+//             });
 
-            if (issues.length > 5) {
-              formattedResponse += `... and ${issues.length - 5} more items due in ${dateGroup}.\n`;
-            }
+//             if (issues.length > 5) {
+//               formattedResponse += `... and ${issues.length - 5} more items due in ${dateGroup}.\n`;
+//             }
 
-            formattedResponse += "\n";
-          });
-        }
+//             formattedResponse += "\n";
+//           });
+//         }
 
-        // Store in conversation memory
-        if (memory) {
-          memory.lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (memory) {
+//           memory.lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "TIMELINE",
-            timeframe: getTimeframeDescription(timeParams),
-          },
-        });
-      }
-    }
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "TIMELINE",
+//             timeframe: getTimeframeDescription(timeParams),
+//           },
+//         });
+//       }
+//     }
 
-    return null; // Continue with normal processing if no issues
-  } catch (error) {
-    console.error("Error handling advanced timeline query:", error);
-    return null; // Continue with normal processing
-  }
-}
+//     return null; // Continue with normal processing if no issues
+//   } catch (error) {
+//     console.error("Error handling advanced timeline query:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Helper function to extract time parameters from query
-function extractTimeParameters(query) {
-  const params = {
-    type: null, // thisWeek, nextWeek, thisMonth, nextMonth, upcoming, overdue, noDate
-    assignee: null, // specific person
-    issueType: null, // bug, story, task, etc.
-    priority: null, // high, medium, low
-  };
+// function extractTimeParameters(query) {
+//   const params = {
+//     type: null, // thisWeek, nextWeek, thisMonth, nextMonth, upcoming, overdue, noDate
+//     assignee: null, // specific person
+//     issueType: null, // bug, story, task, etc.
+//     priority: null, // high, medium, low
+//   };
 
-  // Extract timeframe
-  if (/this week|current week/i.test(query)) {
-    params.type = "thisWeek";
-  } else if (/next week/i.test(query)) {
-    params.type = "nextWeek";
-  } else if (/this month|current month/i.test(query)) {
-    params.type = "thisMonth";
-  } else if (/next month/i.test(query)) {
-    params.type = "nextMonth";
-  } else if (/overdue|late|miss(ed)?|behind/i.test(query)) {
-    params.type = "overdue";
-  } else if (/no due date|missing deadline|without deadline|no deadline/i.test(query)) {
-    params.type = "noDate";
-  } else if (/upcoming|future|planned|scheduled/i.test(query)) {
-    params.type = "upcoming";
-  }
+//   // Extract timeframe
+//   if (/this week|current week/i.test(query)) {
+//     params.type = "thisWeek";
+//   } else if (/next week/i.test(query)) {
+//     params.type = "nextWeek";
+//   } else if (/this month|current month/i.test(query)) {
+//     params.type = "thisMonth";
+//   } else if (/next month/i.test(query)) {
+//     params.type = "nextMonth";
+//   } else if (/overdue|late|miss(ed)?|behind/i.test(query)) {
+//     params.type = "overdue";
+//   } else if (/no due date|missing deadline|without deadline|no deadline/i.test(query)) {
+//     params.type = "noDate";
+//   } else if (/upcoming|future|planned|scheduled/i.test(query)) {
+//     params.type = "upcoming";
+//   }
 
-  // Extract assignee
-  const assigneeMatch = query.match(/assigned to (\w+)|(\w+)'s (deadlines|due dates|tasks)/i);
-  if (assigneeMatch) {
-    params.assignee = assigneeMatch[1] || assigneeMatch[2];
-  }
+//   // Extract assignee
+//   const assigneeMatch = query.match(/assigned to (\w+)|(\w+)'s (deadlines|due dates|tasks)/i);
+//   if (assigneeMatch) {
+//     params.assignee = assigneeMatch[1] || assigneeMatch[2];
+//   }
 
-  // Extract issue type
-  const typeMatch = query.match(/type(?:s)? (?:is |are |=)?\s*"?(bug|story|task|epic)"?s?/i);
-  if (typeMatch) {
-    params.issueType = typeMatch[1].charAt(0).toUpperCase() + typeMatch[1].slice(1).toLowerCase();
-  }
+//   // Extract issue type
+//   const typeMatch = query.match(/type(?:s)? (?:is |are |=)?\s*"?(bug|story|task|epic)"?s?/i);
+//   if (typeMatch) {
+//     params.issueType = typeMatch[1].charAt(0).toUpperCase() + typeMatch[1].slice(1).toLowerCase();
+//   }
 
-  // Extract priority
-  const priorityMatch = query.match(/priority (?:is |=)?\s*"?(high|highest|medium|low|lowest)"?/i);
-  if (priorityMatch) {
-    params.priority = priorityMatch[1].charAt(0).toUpperCase() + priorityMatch[1].slice(1).toLowerCase();
-  }
+//   // Extract priority
+//   const priorityMatch = query.match(/priority (?:is |=)?\s*"?(high|highest|medium|low|lowest)"?/i);
+//   if (priorityMatch) {
+//     params.priority = priorityMatch[1].charAt(0).toUpperCase() + priorityMatch[1].slice(1).toLowerCase();
+//   }
 
-  return params;
-}
+//   return params;
+// }
 
 // Helper function to organize timeline issues by date
-function organizeTimelineByDate(issues, timeParams) {
-  const issuesByDate = {};
-  const now = new Date();
+// function organizeTimelineByDate(issues, timeParams) {
+//   const issuesByDate = {};
+//   const now = new Date();
 
-  // Separate overdue items for special highlighting
-  if (timeParams.type !== "overdue") {
-    const overdueIssues = issues.filter(
-      (issue) => issue.fields.duedate && new Date(issue.fields.duedate) < now && issue.fields.status.name !== "Done"
-    );
+//   // Separate overdue items for special highlighting
+//   if (timeParams.type !== "overdue") {
+//     const overdueIssues = issues.filter(
+//       (issue) => issue.fields.duedate && new Date(issue.fields.duedate) < now && issue.fields.status.name !== "Done"
+//     );
 
-    if (overdueIssues.length > 0) {
-      issuesByDate["Overdue"] = overdueIssues;
-    }
-  }
+//     if (overdueIssues.length > 0) {
+//       issuesByDate["Overdue"] = overdueIssues;
+//     }
+//   }
 
-  // Group into appropriate time buckets based on query type
-  issues.forEach((issue) => {
-    if (!issue.fields.duedate) return;
+//   // Group into appropriate time buckets based on query type
+//   issues.forEach((issue) => {
+//     if (!issue.fields.duedate) return;
 
-    const dueDate = new Date(issue.fields.duedate);
-    let dateKey;
+//     const dueDate = new Date(issue.fields.duedate);
+//     let dateKey;
 
-    // Skip already categorized overdue items
-    if (dueDate < now && issue.fields.status.name !== "Done" && timeParams.type !== "overdue") {
-      return;
-    }
+//     // Skip already categorized overdue items
+//     if (dueDate < now && issue.fields.status.name !== "Done" && timeParams.type !== "overdue") {
+//       return;
+//     }
 
-    if (timeParams.type === "thisWeek" || timeParams.type === "nextWeek") {
-      // For week views, group by day of week
-      dateKey = dueDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
-    } else if (timeParams.type === "upcoming") {
-      // For upcoming, categorize as This Week, Next Week, This Month, Future
-      const thisWeekEnd = new Date(now);
-      thisWeekEnd.setDate(now.getDate() + (7 - now.getDay()));
+//     if (timeParams.type === "thisWeek" || timeParams.type === "nextWeek") {
+//       // For week views, group by day of week
+//       dateKey = dueDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+//     } else if (timeParams.type === "upcoming") {
+//       // For upcoming, categorize as This Week, Next Week, This Month, Future
+//       const thisWeekEnd = new Date(now);
+//       thisWeekEnd.setDate(now.getDate() + (7 - now.getDay()));
 
-      const nextWeekEnd = new Date(thisWeekEnd);
-      nextWeekEnd.setDate(thisWeekEnd.getDate() + 7);
+//       const nextWeekEnd = new Date(thisWeekEnd);
+//       nextWeekEnd.setDate(thisWeekEnd.getDate() + 7);
 
-      const thisMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+//       const thisMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-      if (dueDate <= thisWeekEnd) {
-        dateKey = "This Week";
-      } else if (dueDate <= nextWeekEnd) {
-        dateKey = "Next Week";
-      } else if (dueDate <= thisMonthEnd) {
-        dateKey = "Later This Month";
-      } else {
-        const monthYear = dueDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-        dateKey = monthYear;
-      }
-    } else {
-      // Default - group by month and year
-      dateKey = dueDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-    }
+//       if (dueDate <= thisWeekEnd) {
+//         dateKey = "This Week";
+//       } else if (dueDate <= nextWeekEnd) {
+//         dateKey = "Next Week";
+//       } else if (dueDate <= thisMonthEnd) {
+//         dateKey = "Later This Month";
+//       } else {
+//         const monthYear = dueDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+//         dateKey = monthYear;
+//       }
+//     } else {
+//       // Default - group by month and year
+//       dateKey = dueDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+//     }
 
-    if (!issuesByDate[dateKey]) {
-      issuesByDate[dateKey] = [];
-    }
+//     if (!issuesByDate[dateKey]) {
+//       issuesByDate[dateKey] = [];
+//     }
 
-    issuesByDate[dateKey].push(issue);
-  });
+//     issuesByDate[dateKey].push(issue);
+//   });
 
-  // Sort each group by due date
-  Object.values(issuesByDate).forEach((group) => {
-    group.sort((a, b) => (a.fields.duedate && b.fields.duedate ? new Date(a.fields.duedate) - new Date(b.fields.duedate) : 0));
-  });
+//   // Sort each group by due date
+//   Object.values(issuesByDate).forEach((group) => {
+//     group.sort((a, b) => (a.fields.duedate && b.fields.duedate ? new Date(a.fields.duedate) - new Date(b.fields.duedate) : 0));
+//   });
 
-  return issuesByDate;
-}
+//   return issuesByDate;
+// }
 
 // Helper to get human-readable timeframe description
-function getTimeframeDescription(timeParams) {
-  switch (timeParams.type) {
-    case "thisWeek":
-      return "this week";
-    case "nextWeek":
-      return "next week";
-    case "thisMonth":
-      return "this month";
-    case "nextMonth":
-      return "next month";
-    case "overdue":
-      return "overdue items";
-    case "noDate":
-      return "items without due dates";
-    case "upcoming":
-    default:
-      return "upcoming deadlines";
-  }
-}
+// function getTimeframeDescription(timeParams) {
+//   switch (timeParams.type) {
+//     case "thisWeek":
+//       return "this week";
+//     case "nextWeek":
+//       return "next week";
+//     case "thisMonth":
+//       return "this month";
+//     case "nextMonth":
+//       return "next month";
+//     case "overdue":
+//       return "overdue items";
+//     case "noDate":
+//       return "items without due dates";
+//     case "upcoming":
+//     default:
+//       return "upcoming deadlines";
+//   }
+// }
 
 // Advanced handler for workload analysis
-async function getDetailedWorkloadAnalysis(req, res, query, sessionId) {
-  try {
-    // Extract parameters from query
-    const workloadParams = {
-      showUnassigned: /unassigned|not assigned/i.test(query),
-      focusPerson: null,
-      includeCompleted: /include (done|completed|finished)/i.test(query),
-      showPriority: /by priority|priority breakdown/i.test(query),
-      showStatus: /by status|status breakdown/i.test(query),
-    };
+// async function getDetailedWorkloadAnalysis(req, res, query, sessionId) {
+//   try {
+//     // Extract parameters from query
+//     const workloadParams = {
+//       showUnassigned: /unassigned|not assigned/i.test(query),
+//       focusPerson: null,
+//       includeCompleted: /include (done|completed|finished)/i.test(query),
+//       showPriority: /by priority|priority breakdown/i.test(query),
+//       showStatus: /by status|status breakdown/i.test(query),
+//     };
 
-    // Check if query focuses on a specific person
-    const personMatch = query.match(/(?:about|for|on) (\w+)['s]? workload/i);
-    if (personMatch) {
-      workloadParams.focusPerson = personMatch[1];
-    }
+//     // Check if query focuses on a specific person
+//     const personMatch = query.match(/(?:about|for|on) (\w+)['s]? workload/i);
+//     if (personMatch) {
+//       workloadParams.focusPerson = personMatch[1];
+//     }
 
-    // Build appropriate JQL
-    let jql = `project = ${process.env.JIRA_PROJECT_KEY}`;
+//     // Build appropriate JQL
+//     let jql = `project = ${process.env.JIRA_PROJECT_KEY}`;
 
-    if (!workloadParams.includeCompleted) {
-      jql += ` AND status != "Done"`;
-    }
+//     if (!workloadParams.includeCompleted) {
+//       jql += ` AND status != "Done"`;
+//     }
 
-    if (workloadParams.focusPerson) {
-      jql += ` AND assignee ~ "${workloadParams.focusPerson}"`;
-    } else if (!workloadParams.showUnassigned) {
-      jql += ` AND assignee IS NOT EMPTY`;
-    }
+//     if (workloadParams.focusPerson) {
+//       jql += ` AND assignee ~ "${workloadParams.focusPerson}"`;
+//     } else if (!workloadParams.showUnassigned) {
+//       jql += ` AND assignee IS NOT EMPTY`;
+//     }
 
-    jql += ` ORDER BY assignee ASC, priority DESC`;
+//     jql += ` ORDER BY assignee ASC, priority DESC`;
 
-    // Fetch all assignments
-    const workloadResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
-      params: {
-        jql: jql,
-        maxResults: 100,
-        fields: "summary,status,assignee,priority,duedate,issuetype,created,updated",
-      },
-      auth,
-    });
+//     // Fetch all assignments
+//     const workloadResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//       params: {
+//         jql: jql,
+//         maxResults: 100,
+//         fields: "summary,status,assignee,priority,duedate,issuetype,created,updated",
+//       },
+//       auth,
+//     });
 
-    if (workloadResponse.data && workloadResponse.data.issues && workloadResponse.data.issues.length > 0) {
-      // Analyze workload distribution
-      const workloadAnalysis = analyzeWorkloadDistribution(workloadResponse.data.issues, workloadParams);
+//     if (workloadResponse.data && workloadResponse.data.issues && workloadResponse.data.issues.length > 0) {
+//       // Analyze workload distribution
+//       const workloadAnalysis = analyzeWorkloadDistribution(workloadResponse.data.issues, workloadParams);
 
-      // Get user preferences for response style
-      const memory = getConversationMemory(sessionId);
-      const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
+//       // Get user preferences for response style
+//       const memory = getConversationMemory(sessionId);
+//       const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
 
-      try {
-        // Generate AI response
-        const systemPrompt = `
-          You are a helpful Jira assistant analyzing team workload distribution.
+//       try {
+//         // Generate AI response
+//         const systemPrompt = `
+//           You are a helpful Jira assistant analyzing team workload distribution.
           
-          Create a ${
-            verbosityLevel === "concise"
-              ? "brief and focused"
-              : verbosityLevel === "detailed"
-              ? "comprehensive and detailed"
-              : "balanced and informative"
-          } response about the team's current workload.
+//           Create a ${
+//             verbosityLevel === "concise"
+//               ? "brief and focused"
+//               : verbosityLevel === "detailed"
+//               ? "comprehensive and detailed"
+//               : "balanced and informative"
+//           } response about the team's current workload.
           
-          ${
-            verbosityLevel === "concise"
-              ? "Focus only on the key metrics and most significant workload imbalances."
-              : verbosityLevel === "detailed"
-              ? "Provide detailed breakdowns of workload by person, with analysis of distribution and potential issues."
-              : "Balance detail with clarity, highlighting important workload patterns."
-          }
+//           ${
+//             verbosityLevel === "concise"
+//               ? "Focus only on the key metrics and most significant workload imbalances."
+//               : verbosityLevel === "detailed"
+//               ? "Provide detailed breakdowns of workload by person, with analysis of distribution and potential issues."
+//               : "Balance detail with clarity, highlighting important workload patterns."
+//           }
           
-          ${
-            workloadParams.focusPerson
-              ? `Focus specifically on ${workloadParams.focusPerson}'s workload and tasks.`
-              : "Highlight who has the most work, who has high priority items, and any imbalances."
-          }
+//           ${
+//             workloadParams.focusPerson
+//               ? `Focus specifically on ${workloadParams.focusPerson}'s workload and tasks.`
+//               : "Highlight who has the most work, who has high priority items, and any imbalances."
+//           }
           
-          Be helpful and insightful, not just listing raw data.
-          Use markdown formatting, especially for organizing by team member.
-          Highlight any concerning workload imbalances or overloaded team members.
-        `;
+//           Be helpful and insightful, not just listing raw data.
+//           Use markdown formatting, especially for organizing by team member.
+//           Highlight any concerning workload imbalances or overloaded team members.
+//         `;
 
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `Team workload data: ${JSON.stringify(workloadAnalysis)}` },
-          ],
-          temperature: 0.7,
-        });
+//         const aiResponse = await openai.chat.completions.create({
+//           model: "gpt-4",
+//           messages: [
+//             { role: "system", content: systemPrompt },
+//             { role: "user", content: `Team workload data: ${JSON.stringify(workloadAnalysis)}` },
+//           ],
+//           temperature: 0.7,
+//         });
 
-        const formattedResponse = aiResponse.choices[0].message.content;
+//         const formattedResponse = aiResponse.choices[0].message.content;
 
-        // Store in conversation memory
-        if (memory) {
-          memory.lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (memory) {
+//           memory.lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "WORKLOAD",
-            focusPerson: workloadParams.focusPerson,
-            workloadDistribution: workloadAnalysis.distributionSummary,
-          },
-        });
-      } catch (aiError) {
-        console.error("Error generating AI workload analysis:", aiError);
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "WORKLOAD",
+//             focusPerson: workloadParams.focusPerson,
+//             workloadDistribution: workloadAnalysis.distributionSummary,
+//           },
+//         });
+//       } catch (aiError) {
+//         console.error("Error generating AI workload analysis:", aiError);
 
-        // Fallback to a structured format
-        let formattedResponse = `## Team Workload Analysis\n\n`;
+//         // Fallback to a structured format
+//         let formattedResponse = `## Team Workload Analysis\n\n`;
 
-        if (workloadParams.focusPerson) {
-          const personData = workloadAnalysis.assignees.find((a) => a.name.toLowerCase() === workloadParams.focusPerson.toLowerCase());
+//         if (workloadParams.focusPerson) {
+//           const personData = workloadAnalysis.assignees.find((a) => a.name.toLowerCase() === workloadParams.focusPerson.toLowerCase());
 
-          if (personData) {
-            formattedResponse += `### ${personData.name}'s Workload\n`;
-            formattedResponse += `**Total tasks**: ${personData.taskCount}\n`;
-            formattedResponse += `**High priority**: ${personData.highPriorityCount}\n`;
+//           if (personData) {
+//             formattedResponse += `### ${personData.name}'s Workload\n`;
+//             formattedResponse += `**Total tasks**: ${personData.taskCount}\n`;
+//             formattedResponse += `**High priority**: ${personData.highPriorityCount}\n`;
 
-            if (personData.dueSoon > 0) {
-              formattedResponse += `**Due soon**: ${personData.dueSoon} items due in the next 7 days\n`;
-            }
+//             if (personData.dueSoon > 0) {
+//               formattedResponse += `**Due soon**: ${personData.dueSoon} items due in the next 7 days\n`;
+//             }
 
-            if (personData.overdue > 0) {
-              formattedResponse += `**Overdue**: ${personData.overdue} items past due\n`;
-            }
+//             if (personData.overdue > 0) {
+//               formattedResponse += `**Overdue**: ${personData.overdue} items past due\n`;
+//             }
 
-            formattedResponse += `\n**Current tasks**:\n`;
-            personData.tasks.slice(0, 5).forEach((task) => {
-              formattedResponse += `• ${task.key}: ${task.summary} (${task.status}, ${task.priority}${
-                task.dueDate ? `, Due: ${task.dueDate}` : ""
-              })\n`;
-            });
+//             formattedResponse += `\n**Current tasks**:\n`;
+//             personData.tasks.slice(0, 5).forEach((task) => {
+//               formattedResponse += `• ${task.key}: ${task.summary} (${task.status}, ${task.priority}${
+//                 task.dueDate ? `, Due: ${task.dueDate}` : ""
+//               })\n`;
+//             });
 
-            if (personData.tasks.length > 5) {
-              formattedResponse += `... and ${personData.tasks.length - 5} more tasks\n`;
-            }
-          } else {
-            formattedResponse += `No tasks found for ${workloadParams.focusPerson}.\n`;
-          }
-        } else {
-          // Compare workloads
-          formattedResponse += `**Total team workload**: ${workloadAnalysis.totalTasks} active tasks across ${workloadAnalysis.assignees.length} team members\n\n`;
+//             if (personData.tasks.length > 5) {
+//               formattedResponse += `... and ${personData.tasks.length - 5} more tasks\n`;
+//             }
+//           } else {
+//             formattedResponse += `No tasks found for ${workloadParams.focusPerson}.\n`;
+//           }
+//         } else {
+//           // Compare workloads
+//           formattedResponse += `**Total team workload**: ${workloadAnalysis.totalTasks} active tasks across ${workloadAnalysis.assignees.length} team members\n\n`;
 
-          if (workloadAnalysis.unassignedCount > 0) {
-            formattedResponse += `⚠️ There are ${workloadAnalysis.unassignedCount} unassigned tasks that need attention.\n\n`;
-          }
+//           if (workloadAnalysis.unassignedCount > 0) {
+//             formattedResponse += `⚠️ There are ${workloadAnalysis.unassignedCount} unassigned tasks that need attention.\n\n`;
+//           }
 
-          // Sort by workload (highest first)
-          workloadAnalysis.assignees
-            .sort((a, b) => b.taskCount - a.taskCount)
-            .forEach((assignee) => {
-              const workloadLevel =
-                assignee.taskCount > 8 ? "**Heavily loaded**" : assignee.taskCount > 4 ? "Moderately loaded" : "Lightly loaded";
+//           // Sort by workload (highest first)
+//           workloadAnalysis.assignees
+//             .sort((a, b) => b.taskCount - a.taskCount)
+//             .forEach((assignee) => {
+//               const workloadLevel =
+//                 assignee.taskCount > 8 ? "**Heavily loaded**" : assignee.taskCount > 4 ? "Moderately loaded" : "Lightly loaded";
 
-              formattedResponse += `### ${assignee.name} (${assignee.taskCount} tasks) - ${workloadLevel}\n`;
+//               formattedResponse += `### ${assignee.name} (${assignee.taskCount} tasks) - ${workloadLevel}\n`;
 
-              if (assignee.highPriorityCount > 0) {
-                formattedResponse += `${assignee.highPriorityCount} high priority tasks`;
-                if (assignee.overdue > 0) {
-                  formattedResponse += `, ${assignee.overdue} overdue`;
-                }
-                formattedResponse += `\n`;
-              }
+//               if (assignee.highPriorityCount > 0) {
+//                 formattedResponse += `${assignee.highPriorityCount} high priority tasks`;
+//                 if (assignee.overdue > 0) {
+//                   formattedResponse += `, ${assignee.overdue} overdue`;
+//                 }
+//                 formattedResponse += `\n`;
+//               }
 
-              // List a few example tasks
-              formattedResponse += `\n**Example tasks**:\n`;
-              assignee.tasks.slice(0, 3).forEach((task) => {
-                formattedResponse += `• ${task.key}: ${task.summary} (${task.status}, ${task.priority})\n`;
-              });
+//               // List a few example tasks
+//               formattedResponse += `\n**Example tasks**:\n`;
+//               assignee.tasks.slice(0, 3).forEach((task) => {
+//                 formattedResponse += `• ${task.key}: ${task.summary} (${task.status}, ${task.priority})\n`;
+//               });
 
-              if (assignee.tasks.length > 3) {
-                formattedResponse += `... and ${assignee.tasks.length - 3} more tasks\n`;
-              }
+//               if (assignee.tasks.length > 3) {
+//                 formattedResponse += `... and ${assignee.tasks.length - 3} more tasks\n`;
+//               }
 
-              formattedResponse += `\n`;
-            });
-        }
+//               formattedResponse += `\n`;
+//             });
+//         }
 
-        // Store in conversation memory
-        if (memory) {
-          memory.lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (memory) {
+//           memory.lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "WORKLOAD",
-            focusPerson: workloadParams.focusPerson,
-          },
-        });
-      }
-    }
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "WORKLOAD",
+//             focusPerson: workloadParams.focusPerson,
+//           },
+//         });
+//       }
+//     }
 
-    return null; // Continue with normal processing if no issues
-  } catch (error) {
-    console.error("Error handling workload query:", error);
-    return null; // Continue with normal processing
-  }
-}
+//     return null; // Continue with normal processing if no issues
+//   } catch (error) {
+//     console.error("Error handling workload query:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
-// Helper function to analyze workload distribution
-function analyzeWorkloadDistribution(issues, params) {
-  // Group issues by assignee
-  const issuesByAssignee = {};
-  const now = new Date();
-  const oneWeek = 7 * 24 * 60 * 60 * 1000;
+// // Helper function to analyze workload distribution
+// function analyzeWorkloadDistribution(issues, params) {
+//   // Group issues by assignee
+//   const issuesByAssignee = {};
+//   const now = new Date();
+//   const oneWeek = 7 * 24 * 60 * 60 * 1000;
 
-  issues.forEach((issue) => {
-    const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//   issues.forEach((issue) => {
+//     const assignee = issue.fields.assignee?.displayName || "Unassigned";
 
-    if (!issuesByAssignee[assignee]) {
-      issuesByAssignee[assignee] = [];
-    }
+//     if (!issuesByAssignee[assignee]) {
+//       issuesByAssignee[assignee] = [];
+//     }
 
-    issuesByAssignee[assignee].push(issue);
-  });
+//     issuesByAssignee[assignee].push(issue);
+//   });
 
-  // Calculate workload metrics for each assignee
-  const assigneeData = Object.entries(issuesByAssignee).map(([name, tasks]) => {
-    const highPriorityCount = tasks.filter(
-      (task) => task.fields.priority?.name === "Highest" || task.fields.priority?.name === "High"
-    ).length;
+//   // Calculate workload metrics for each assignee
+//   const assigneeData = Object.entries(issuesByAssignee).map(([name, tasks]) => {
+//     const highPriorityCount = tasks.filter(
+//       (task) => task.fields.priority?.name === "Highest" || task.fields.priority?.name === "High"
+//     ).length;
 
-    const dueSoon = tasks.filter(
-      (task) => task.fields.duedate && new Date(task.fields.duedate) > now && new Date(task.fields.duedate) - now < oneWeek
-    ).length;
+//     const dueSoon = tasks.filter(
+//       (task) => task.fields.duedate && new Date(task.fields.duedate) > now && new Date(task.fields.duedate) - now < oneWeek
+//     ).length;
 
-    const overdue = tasks.filter(
-      (task) => task.fields.duedate && new Date(task.fields.duedate) < now && task.fields.status.name !== "Done"
-    ).length;
+//     const overdue = tasks.filter(
+//       (task) => task.fields.duedate && new Date(task.fields.duedate) < now && task.fields.status.name !== "Done"
+//     ).length;
 
-    // Get status breakdown
-    const statusBreakdown = {};
-    tasks.forEach((task) => {
-      const status = task.fields.status?.name || "Unknown";
-      statusBreakdown[status] = (statusBreakdown[status] || 0) + 1;
-    });
+//     // Get status breakdown
+//     const statusBreakdown = {};
+//     tasks.forEach((task) => {
+//       const status = task.fields.status?.name || "Unknown";
+//       statusBreakdown[status] = (statusBreakdown[status] || 0) + 1;
+//     });
 
-    // Get type breakdown
-    const typeBreakdown = {};
-    tasks.forEach((task) => {
-      const type = task.fields.issuetype?.name || "Unknown";
-      typeBreakdown[type] = (typeBreakdown[type] || 0) + 1;
-    });
+//     // Get type breakdown
+//     const typeBreakdown = {};
+//     tasks.forEach((task) => {
+//       const type = task.fields.issuetype?.name || "Unknown";
+//       typeBreakdown[type] = (typeBreakdown[type] || 0) + 1;
+//     });
 
-    return {
-      name,
-      taskCount: tasks.length,
-      highPriorityCount,
-      dueSoon,
-      overdue,
-      statusBreakdown,
-      typeBreakdown,
-      tasks: tasks.map((task) => ({
-        key: task.key,
-        summary: task.fields.summary,
-        status: task.fields.status?.name || "Unknown",
-        priority: task.fields.priority?.name || "Unknown",
-        dueDate: task.fields.duedate ? new Date(task.fields.duedate).toLocaleDateString() : null,
-        isOverdue: task.fields.duedate && new Date(task.fields.duedate) < now && task.fields.status.name !== "Done",
-        isDueSoon: task.fields.duedate && new Date(task.fields.duedate) > now && new Date(task.fields.duedate) - now < oneWeek,
-      })),
-    };
-  });
+//     return {
+//       name,
+//       taskCount: tasks.length,
+//       highPriorityCount,
+//       dueSoon,
+//       overdue,
+//       statusBreakdown,
+//       typeBreakdown,
+//       tasks: tasks.map((task) => ({
+//         key: task.key,
+//         summary: task.fields.summary,
+//         status: task.fields.status?.name || "Unknown",
+//         priority: task.fields.priority?.name || "Unknown",
+//         dueDate: task.fields.duedate ? new Date(task.fields.duedate).toLocaleDateString() : null,
+//         isOverdue: task.fields.duedate && new Date(task.fields.duedate) < now && task.fields.status.name !== "Done",
+//         isDueSoon: task.fields.duedate && new Date(task.fields.duedate) > now && new Date(task.fields.duedate) - now < oneWeek,
+//       })),
+//     };
+//   });
 
-  // Find team members with unusually high or low workloads
-  const totalAssignees = assigneeData.filter((a) => a.name !== "Unassigned").length;
-  const totalAssignedTasks = assigneeData.filter((a) => a.name !== "Unassigned").reduce((sum, a) => sum + a.taskCount, 0);
+//   // Find team members with unusually high or low workloads
+//   const totalAssignees = assigneeData.filter((a) => a.name !== "Unassigned").length;
+//   const totalAssignedTasks = assigneeData.filter((a) => a.name !== "Unassigned").reduce((sum, a) => sum + a.taskCount, 0);
 
-  const avgTasksPerPerson = totalAssigneeData > 0 ? totalAssignedTasks / totalAssignees : 0;
+//   const avgTasksPerPerson = totalAssigneeData > 0 ? totalAssignedTasks / totalAssignees : 0;
 
-  // Identify overloaded and underloaded team members
-  const overloadedMembers = assigneeData.filter((a) => a.name !== "Unassigned" && a.taskCount > avgTasksPerPerson * 1.5).map((a) => a.name);
+//   // Identify overloaded and underloaded team members
+//   const overloadedMembers = assigneeData.filter((a) => a.name !== "Unassigned" && a.taskCount > avgTasksPerPerson * 1.5).map((a) => a.name);
 
-  const underloadedMembers = assigneeData
-    .filter((a) => a.name !== "Unassigned" && a.taskCount < avgTasksPerPerson * 0.5)
-    .map((a) => a.name);
+//   const underloadedMembers = assigneeData
+//     .filter((a) => a.name !== "Unassigned" && a.taskCount < avgTasksPerPerson * 0.5)
+//     .map((a) => a.name);
 
-  // Get count of unassigned tasks
-  const unassignedCount = issuesByAssignee["Unassigned"]?.length || 0;
+//   // Get count of unassigned tasks
+//   const unassignedCount = issuesByAssignee["Unassigned"]?.length || 0;
 
-  // Calculate overall workload distribution
-  const maxWorkload = Math.max(...assigneeData.filter((a) => a.name !== "Unassigned").map((a) => a.taskCount));
-  const minWorkload = Math.min(...assigneeData.filter((a) => a.name !== "Unassigned").map((a) => a.taskCount));
-  const workloadGap = maxWorkload - minWorkload;
+//   // Calculate overall workload distribution
+//   const maxWorkload = Math.max(...assigneeData.filter((a) => a.name !== "Unassigned").map((a) => a.taskCount));
+//   const minWorkload = Math.min(...assigneeData.filter((a) => a.name !== "Unassigned").map((a) => a.taskCount));
+//   const workloadGap = maxWorkload - minWorkload;
 
-  // Evaluate workload distribution
-  let distributionSummary = "balanced";
-  if (workloadGap > avgTasksPerPerson) {
-    distributionSummary = "highly unbalanced";
-  } else if (workloadGap > avgTasksPerPerson / 2) {
-    distributionSummary = "somewhat unbalanced";
-  }
+//   // Evaluate workload distribution
+//   let distributionSummary = "balanced";
+//   if (workloadGap > avgTasksPerPerson) {
+//     distributionSummary = "highly unbalanced";
+//   } else if (workloadGap > avgTasksPerPerson / 2) {
+//     distributionSummary = "somewhat unbalanced";
+//   }
 
-  return {
-    totalTasks: issues.length,
-    unassignedCount,
-    assignees: assigneeData,
-    overloadedMembers,
-    underloadedMembers,
-    avgTasksPerPerson,
-    distributionSummary,
-    maxWorkload,
-    minWorkload,
-    workloadGap,
-  };
-}
+//   return {
+//     totalTasks: issues.length,
+//     unassignedCount,
+//     assignees: assigneeData,
+//     overloadedMembers,
+//     underloadedMembers,
+//     avgTasksPerPerson,
+//     distributionSummary,
+//     maxWorkload,
+//     minWorkload,
+//     workloadGap,
+//   };
+// }
 
-async function compareIssues(req, res, query, sessionId) {
-  try {
-    // Extract issue keys
-    const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "gi");
-    const matches = query.match(issueKeyPattern);
+// async function compareIssues(req, res, query, sessionId) {
+//   try {
+//     // Extract issue keys
+//     const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "gi");
+//     const matches = query.match(issueKeyPattern);
 
-    if (matches && matches.length >= 2) {
-      const issueKey1 = matches[0];
-      const issueKey2 = matches[1];
+//     if (matches && matches.length >= 2) {
+//       const issueKey1 = matches[0];
+//       const issueKey2 = matches[1];
 
-      // Fetch both issues with all relevant fields
-      const [issue1Response, issue2Response] = await Promise.all([
-        axios.get(`${JIRA_URL}/rest/api/3/issue/${issueKey1}`, {
-          params: {
-            fields: "summary,status,assignee,priority,created,updated,duedate,issuetype,description,comment,labels,fixVersions,components",
-          },
-          auth,
-        }),
-        axios.get(`${JIRA_URL}/rest/api/3/issue/${issueKey2}`, {
-          params: {
-            fields: "summary,status,assignee,priority,created,updated,duedate,issuetype,description,comment,labels,fixVersions,components",
-          },
-          auth,
-        }),
-      ]);
+//       // Fetch both issues with all relevant fields
+//       const [issue1Response, issue2Response] = await Promise.all([
+//         axios.get(`${JIRA_URL}/rest/api/3/issue/${issueKey1}`, {
+//           params: {
+//             fields: "summary,status,assignee,priority,created,updated,duedate,issuetype,description,comment,labels,fixVersions,components",
+//           },
+//           auth,
+//         }),
+//         axios.get(`${JIRA_URL}/rest/api/3/issue/${issueKey2}`, {
+//           params: {
+//             fields: "summary,status,assignee,priority,created,updated,duedate,issuetype,description,comment,labels,fixVersions,components",
+//           },
+//           auth,
+//         }),
+//       ]);
 
-      const issue1 = issue1Response.data;
-      const issue2 = issue2Response.data;
+//       const issue1 = issue1Response.data;
+//       const issue2 = issue2Response.data;
 
-      // Analyze what aspects the user might be interested in
-      const comparisonFocus = analyzeComparisonFocus(query);
+//       // Analyze what aspects the user might be interested in
+//       const comparisonFocus = analyzeComparisonFocus(query);
 
-      // Get user preferences
-      const memory = getConversationMemory(sessionId);
-      const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
+//       // Get user preferences
+//       const memory = getConversationMemory(sessionId);
+//       const verbosityLevel = memory.userPreferences?.verbosityLevel || "medium";
 
-      // Format the comparison
-      try {
-        // Extract data to compare
-        const issue1Data = extractIssueData(issue1);
-        const issue2Data = extractIssueData(issue2);
+//       // Format the comparison
+//       try {
+//         // Extract data to compare
+//         const issue1Data = extractIssueData(issue1);
+//         const issue2Data = extractIssueData(issue2);
 
-        // Find similarities and differences
-        const comparison = compareIssueData(issue1Data, issue2Data);
+//         // Find similarities and differences
+//         const comparison = compareIssueData(issue1Data, issue2Data);
 
-        // Generate a prompt based on focus and preferences
-        const systemPrompt = `
-          You are a helpful Jira assistant comparing two issues. Create a clear, ${
-            verbosityLevel === "concise"
-              ? "brief and direct"
-              : verbosityLevel === "detailed"
-              ? "comprehensive and thorough"
-              : "balanced and insightful"
-          } comparison highlighting the ${comparisonFocus ? `differences in ${comparisonFocus}` : "similarities and differences"}.
+//         // Generate a prompt based on focus and preferences
+//         const systemPrompt = `
+//           You are a helpful Jira assistant comparing two issues. Create a clear, ${
+//             verbosityLevel === "concise"
+//               ? "brief and direct"
+//               : verbosityLevel === "detailed"
+//               ? "comprehensive and thorough"
+//               : "balanced and insightful"
+//           } comparison highlighting the ${comparisonFocus ? `differences in ${comparisonFocus}` : "similarities and differences"}.
           
-          Format the response with markdown, organizing the comparison in a way that makes the differences easy to spot.
-          ${
-            verbosityLevel === "concise"
-              ? "Focus only on the key differences and use a compact format."
-              : verbosityLevel === "detailed"
-              ? "Provide a detailed analysis of both similarities and differences with explanations of their significance."
-              : "Highlight important differences while also noting significant similarities."
-          }
+//           Format the response with markdown, organizing the comparison in a way that makes the differences easy to spot.
+//           ${
+//             verbosityLevel === "concise"
+//               ? "Focus only on the key differences and use a compact format."
+//               : verbosityLevel === "detailed"
+//               ? "Provide a detailed analysis of both similarities and differences with explanations of their significance."
+//               : "Highlight important differences while also noting significant similarities."
+//           }
           
-          Include a brief analysis of what the comparison reveals (e.g., "Issue 2 has higher priority but later due date").
-          ${comparisonFocus ? `Since the user seems interested in comparing ${comparisonFocus}, emphasize that aspect.` : ""}
-        `;
+//           Include a brief analysis of what the comparison reveals (e.g., "Issue 2 has higher priority but later due date").
+//           ${comparisonFocus ? `Since the user seems interested in comparing ${comparisonFocus}, emphasize that aspect.` : ""}
+//         `;
 
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: `Compare these two issues: ${JSON.stringify({
-                issue1: issue1Data,
-                issue2: issue2Data,
-                comparison: comparison,
-              })}`,
-            },
-          ],
-          temperature: 0.7,
-        });
+//         const aiResponse = await openai.chat.completions.create({
+//           model: "gpt-4",
+//           messages: [
+//             { role: "system", content: systemPrompt },
+//             {
+//               role: "user",
+//               content: `Compare these two issues: ${JSON.stringify({
+//                 issue1: issue1Data,
+//                 issue2: issue2Data,
+//                 comparison: comparison,
+//               })}`,
+//             },
+//           ],
+//           temperature: 0.7,
+//         });
 
-        const formattedResponse = aiResponse.choices[0].message.content.trim();
+//         const formattedResponse = aiResponse.choices[0].message.content.trim();
 
-        // Store in conversation memory
-        if (memory) {
-          memory.lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (memory) {
+//           memory.lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "COMPARE_ISSUES",
-            issueKeys: [issueKey1, issueKey2],
-            focus: comparisonFocus,
-          },
-        });
-      } catch (aiError) {
-        console.error("Error generating comparison response:", aiError);
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "COMPARE_ISSUES",
+//             issueKeys: [issueKey1, issueKey2],
+//             focus: comparisonFocus,
+//           },
+//         });
+//       } catch (aiError) {
+//         console.error("Error generating comparison response:", aiError);
 
-        // Create a simple comparison if AI fails
-        let formattedResponse = `## Comparison: ${issueKey1} vs ${issueKey2}\n\n`;
+//         // Create a simple comparison if AI fails
+//         let formattedResponse = `## Comparison: ${issueKey1} vs ${issueKey2}\n\n`;
 
-        // Two-column comparison for key fields
-        formattedResponse += `| Field | ${createJiraLink(issueKey1)} | ${issueKey2} |\n`;
-        formattedResponse += `| ----- | ----- | ----- |\n`;
-        formattedResponse += `| Summary | ${issue1.fields.summary} | ${issue2.fields.summary} |\n`;
-        formattedResponse += `| Status | ${issue1.fields.status?.name || "Unknown"} | ${issue2.fields.status?.name || "Unknown"} |\n`;
-        formattedResponse += `| Assignee | ${issue1.fields.assignee?.displayName || "Unassigned"} | ${
-          issue2.fields.assignee?.displayName || "Unassigned"
-        } |\n`;
-        formattedResponse += `| Priority | ${issue1.fields.priority?.name || "Not set"} | ${issue2.fields.priority?.name || "Not set"} |\n`;
-        formattedResponse += `| Type | ${issue1.fields.issuetype?.name || "Unknown"} | ${issue2.fields.issuetype?.name || "Unknown"} |\n`;
+//         // Two-column comparison for key fields
+//         formattedResponse += `| Field | ${createJiraLink(issueKey1)} | ${issueKey2} |\n`;
+//         formattedResponse += `| ----- | ----- | ----- |\n`;
+//         formattedResponse += `| Summary | ${issue1.fields.summary} | ${issue2.fields.summary} |\n`;
+//         formattedResponse += `| Status | ${issue1.fields.status?.name || "Unknown"} | ${issue2.fields.status?.name || "Unknown"} |\n`;
+//         formattedResponse += `| Assignee | ${issue1.fields.assignee?.displayName || "Unassigned"} | ${
+//           issue2.fields.assignee?.displayName || "Unassigned"
+//         } |\n`;
+//         formattedResponse += `| Priority | ${issue1.fields.priority?.name || "Not set"} | ${issue2.fields.priority?.name || "Not set"} |\n`;
+//         formattedResponse += `| Type | ${issue1.fields.issuetype?.name || "Unknown"} | ${issue2.fields.issuetype?.name || "Unknown"} |\n`;
 
-        if (issue1.fields.duedate || issue2.fields.duedate) {
-          formattedResponse += `| Due Date | ${issue1.fields.duedate ? new Date(issue1.fields.duedate).toLocaleDateString() : "None"} | ${
-            issue2.fields.duedate ? new Date(issue2.fields.duedate).toLocaleDateString() : "None"
-          } |\n`;
-        }
+//         if (issue1.fields.duedate || issue2.fields.duedate) {
+//           formattedResponse += `| Due Date | ${issue1.fields.duedate ? new Date(issue1.fields.duedate).toLocaleDateString() : "None"} | ${
+//             issue2.fields.duedate ? new Date(issue2.fields.duedate).toLocaleDateString() : "None"
+//           } |\n`;
+//         }
 
-        // Highlight key differences
-        formattedResponse += `\n### Key Differences\n\n`;
+//         // Highlight key differences
+//         formattedResponse += `\n### Key Differences\n\n`;
 
-        if (issue1.fields.status?.name !== issue2.fields.status?.name) {
-          formattedResponse += `• **Status**: ${createJiraLink(issueKey1)} is in ${issue1.fields.status?.name || "Unknown"} while ${issueKey2} is in ${
-            issue2.fields.status?.name || "Unknown"
-          }\n`;
-        }
+//         if (issue1.fields.status?.name !== issue2.fields.status?.name) {
+//           formattedResponse += `• **Status**: ${createJiraLink(issueKey1)} is in ${issue1.fields.status?.name || "Unknown"} while ${issueKey2} is in ${
+//             issue2.fields.status?.name || "Unknown"
+//           }\n`;
+//         }
 
-        if ((issue1.fields.assignee?.displayName || "Unassigned") !== (issue2.fields.assignee?.displayName || "Unassigned")) {
-          formattedResponse += `• **Assignee**: ${issueKey1} is assigned to ${
-            issue1.fields.assignee?.displayName || "Unassigned"
-          } while ${issueKey2} is assigned to ${issue2.fields.assignee?.displayName || "Unassigned"}\n`;
-        }
+//         if ((issue1.fields.assignee?.displayName || "Unassigned") !== (issue2.fields.assignee?.displayName || "Unassigned")) {
+//           formattedResponse += `• **Assignee**: ${issueKey1} is assigned to ${
+//             issue1.fields.assignee?.displayName || "Unassigned"
+//           } while ${issueKey2} is assigned to ${issue2.fields.assignee?.displayName || "Unassigned"}\n`;
+//         }
 
-        if ((issue1.fields.priority?.name || "Not set") !== (issue2.fields.priority?.name || "Not set")) {
-          formattedResponse += `• **Priority**: ${issueKey1} is ${
-            issue1.fields.priority?.name || "Not set"
-          } priority while ${issueKey2} is ${issue2.fields.priority?.name || "Not set"} priority\n`;
-        }
+//         if ((issue1.fields.priority?.name || "Not set") !== (issue2.fields.priority?.name || "Not set")) {
+//           formattedResponse += `• **Priority**: ${issueKey1} is ${
+//             issue1.fields.priority?.name || "Not set"
+//           } priority while ${issueKey2} is ${issue2.fields.priority?.name || "Not set"} priority\n`;
+//         }
 
-        // Store response
-        if (memory) {
-          memory.lastResponse = formattedResponse;
-        }
+//         // Store response
+//         if (memory) {
+//           memory.lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "COMPARE_ISSUES",
-            issueKeys: [issueKey1, issueKey2],
-          },
-        });
-      }
-    }
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "COMPARE_ISSUES",
+//             issueKeys: [issueKey1, issueKey2],
+//           },
+//         });
+//       }
+//     }
 
-    return null; // Continue with normal processing if we couldn't find two issues
-  } catch (error) {
-    console.error("Error comparing issues:", error);
-    return null; // Continue with normal processing
-  }
-}
+//     return null; // Continue with normal processing if we couldn't find two issues
+//   } catch (error) {
+//     console.error("Error comparing issues:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Helper function to analyze what the user wants to compare
-function analyzeComparisonFocus(query) {
-  // Check for focus on specific aspects
-  if (/status|state|progress/i.test(query)) {
-    return "status";
-  } else if (/priority|importance|urgency/i.test(query)) {
-    return "priority";
-  } else if (/assign|who|person|responsible/i.test(query)) {
-    return "assignee";
-  } else if (/due|deadline|when|date/i.test(query)) {
-    return "due dates";
-  } else if (/time|duration|how long/i.test(query)) {
-    return "timeframes";
-  } else if (/comment|said|mentioned/i.test(query)) {
-    return "comments";
-  } else if (/label|tag|category/i.test(query)) {
-    return "labels";
-  } else if (/component|part|module/i.test(query)) {
-    return "components";
-  }
+// function analyzeComparisonFocus(query) {
+//   // Check for focus on specific aspects
+//   if (/status|state|progress/i.test(query)) {
+//     return "status";
+//   } else if (/priority|importance|urgency/i.test(query)) {
+//     return "priority";
+//   } else if (/assign|who|person|responsible/i.test(query)) {
+//     return "assignee";
+//   } else if (/due|deadline|when|date/i.test(query)) {
+//     return "due dates";
+//   } else if (/time|duration|how long/i.test(query)) {
+//     return "timeframes";
+//   } else if (/comment|said|mentioned/i.test(query)) {
+//     return "comments";
+//   } else if (/label|tag|category/i.test(query)) {
+//     return "labels";
+//   } else if (/component|part|module/i.test(query)) {
+//     return "components";
+//   }
 
-  return null; // No specific focus
-}
+//   return null; // No specific focus
+// }
 
 // Helper function to extract relevant data from an issue
-function extractIssueData(issue) {
-  // Process comments if they exist
-  let comments = [];
-  if (issue.fields.comment && issue.fields.comment.comments) {
-    comments = issue.fields.comment.comments.map((comment) => ({
-      author: comment.author?.displayName || "Unknown",
-      created: comment.created,
-      body:
-        typeof comment.body === "string"
-          ? comment.body.substring(0, 100) + (comment.body.length > 100 ? "..." : "")
-          : "Complex formatted comment",
-    }));
-  }
+// function extractIssueData(issue) {
+//   // Process comments if they exist
+//   let comments = [];
+//   if (issue.fields.comment && issue.fields.comment.comments) {
+//     comments = issue.fields.comment.comments.map((comment) => ({
+//       author: comment.author?.displayName || "Unknown",
+//       created: comment.created,
+//       body:
+//         typeof comment.body === "string"
+//           ? comment.body.substring(0, 100) + (comment.body.length > 100 ? "..." : "")
+//           : "Complex formatted comment",
+//     }));
+//   }
 
-  // Process description
-  let description = "No description";
-  if (issue.fields.description) {
-    if (typeof issue.fields.description === "string") {
-      description = issue.fields.description.substring(0, 150) + (issue.fields.description.length > 150 ? "..." : "");
-    } else {
-      description = "Complex formatted description";
-    }
-  }
+//   // Process description
+//   let description = "No description";
+//   if (issue.fields.description) {
+//     if (typeof issue.fields.description === "string") {
+//       description = issue.fields.description.substring(0, 150) + (issue.fields.description.length > 150 ? "..." : "");
+//     } else {
+//       description = "Complex formatted description";
+//     }
+//   }
 
-  // Extract labels
-  const labels = issue.fields.labels || [];
+//   // Extract labels
+//   const labels = issue.fields.labels || [];
 
-  // Extract components
-  const components = (issue.fields.components || []).map((c) => c.name);
+//   // Extract components
+//   const components = (issue.fields.components || []).map((c) => c.name);
 
-  // Extract fix versions
-  const fixVersions = (issue.fields.fixVersions || []).map((v) => v.name);
+//   // Extract fix versions
+//   const fixVersions = (issue.fields.fixVersions || []).map((v) => v.name);
 
-  return {
-    key: issue.key,
-    summary: issue.fields.summary,
-    status: issue.fields.status?.name || "Unknown",
-    assignee: issue.fields.assignee?.displayName || "Unassigned",
-    priority: issue.fields.priority?.name || "Not set",
-    dueDate: issue.fields.duedate ? new Date(issue.fields.duedate).toLocaleDateString() : null,
-    issuetype: issue.fields.issuetype?.name || "Unknown",
-    created: new Date(issue.fields.created).toLocaleDateString(),
-    updated: new Date(issue.fields.updated).toLocaleDateString(),
-    description: description,
-    comments: comments,
-    commentCount: comments.length,
-    labels: labels,
-    components: components,
-    fixVersions: fixVersions,
-  };
-}
+//   return {
+//     key: issue.key,
+//     summary: issue.fields.summary,
+//     status: issue.fields.status?.name || "Unknown",
+//     assignee: issue.fields.assignee?.displayName || "Unassigned",
+//     priority: issue.fields.priority?.name || "Not set",
+//     dueDate: issue.fields.duedate ? new Date(issue.fields.duedate).toLocaleDateString() : null,
+//     issuetype: issue.fields.issuetype?.name || "Unknown",
+//     created: new Date(issue.fields.created).toLocaleDateString(),
+//     updated: new Date(issue.fields.updated).toLocaleDateString(),
+//     description: description,
+//     comments: comments,
+//     commentCount: comments.length,
+//     labels: labels,
+//     components: components,
+//     fixVersions: fixVersions,
+//   };
+// }
 
 // Helper function to compare two issues and find similarities and differences
-function compareIssueData(issue1, issue2) {
-  const differences = {};
-  const similarities = {};
+// function compareIssueData(issue1, issue2) {
+//   const differences = {};
+//   const similarities = {};
 
-  // Compare basic fields
-  if (issue1.status !== issue2.status) {
-    differences.status = { issue1: issue1.status, issue2: issue2.status };
-  } else {
-    similarities.status = issue1.status;
-  }
+//   // Compare basic fields
+//   if (issue1.status !== issue2.status) {
+//     differences.status = { issue1: issue1.status, issue2: issue2.status };
+//   } else {
+//     similarities.status = issue1.status;
+//   }
 
-  if (issue1.assignee !== issue2.assignee) {
-    differences.assignee = { issue1: issue1.assignee, issue2: issue2.assignee };
-  } else {
-    similarities.assignee = issue1.assignee;
-  }
+//   if (issue1.assignee !== issue2.assignee) {
+//     differences.assignee = { issue1: issue1.assignee, issue2: issue2.assignee };
+//   } else {
+//     similarities.assignee = issue1.assignee;
+//   }
 
-  if (issue1.priority !== issue2.priority) {
-    differences.priority = { issue1: issue1.priority, issue2: issue2.priority };
-  } else {
-    similarities.priority = issue1.priority;
-  }
+//   if (issue1.priority !== issue2.priority) {
+//     differences.priority = { issue1: issue1.priority, issue2: issue2.priority };
+//   } else {
+//     similarities.priority = issue1.priority;
+//   }
 
-  if (issue1.issuetype !== issue2.issuetype) {
-    differences.issuetype = { issue1: issue1.issuetype, issue2: issue2.issuetype };
-  } else {
-    similarities.issuetype = issue1.issuetype;
-  }
+//   if (issue1.issuetype !== issue2.issuetype) {
+//     differences.issuetype = { issue1: issue1.issuetype, issue2: issue2.issuetype };
+//   } else {
+//     similarities.issuetype = issue1.issuetype;
+//   }
 
-  // Due date comparison
-  if (issue1.dueDate !== issue2.dueDate) {
-    differences.dueDate = { issue1: issue1.dueDate, issue2: issue2.dueDate };
+//   // Due date comparison
+//   if (issue1.dueDate !== issue2.dueDate) {
+//     differences.dueDate = { issue1: issue1.dueDate, issue2: issue2.dueDate };
 
-    // Check which is due first
-    if (issue1.dueDate && issue2.dueDate) {
-      const date1 = new Date(issue1.dueDate);
-      const date2 = new Date(issue2.dueDate);
-      differences.dueDateComparison = date1 < date2 ? `${issue1.key} is due earlier` : `${issue2.key} is due earlier`;
-    }
-  } else {
-    similarities.dueDate = issue1.dueDate;
-  }
+//     // Check which is due first
+//     if (issue1.dueDate && issue2.dueDate) {
+//       const date1 = new Date(issue1.dueDate);
+//       const date2 = new Date(issue2.dueDate);
+//       differences.dueDateComparison = date1 < date2 ? `${issue1.key} is due earlier` : `${issue2.key} is due earlier`;
+//     }
+//   } else {
+//     similarities.dueDate = issue1.dueDate;
+//   }
 
-  // Compare arrays (labels, components)
-  if (JSON.stringify(issue1.labels.sort()) !== JSON.stringify(issue2.labels.sort())) {
-    const commonLabels = issue1.labels.filter((l) => issue2.labels.includes(l));
-    const uniqueToIssue1 = issue1.labels.filter((l) => !issue2.labels.includes(l));
-    const uniqueToIssue2 = issue2.labels.filter((l) => !issue1.labels.includes(l));
+//   // Compare arrays (labels, components)
+//   if (JSON.stringify(issue1.labels.sort()) !== JSON.stringify(issue2.labels.sort())) {
+//     const commonLabels = issue1.labels.filter((l) => issue2.labels.includes(l));
+//     const uniqueToIssue1 = issue1.labels.filter((l) => !issue2.labels.includes(l));
+//     const uniqueToIssue2 = issue2.labels.filter((l) => !issue1.labels.includes(l));
 
-    differences.labels = {
-      commonLabels,
-      uniqueToIssue1,
-      uniqueToIssue2,
-    };
-  } else if (issue1.labels.length > 0) {
-    similarities.labels = issue1.labels;
-  }
+//     differences.labels = {
+//       commonLabels,
+//       uniqueToIssue1,
+//       uniqueToIssue2,
+//     };
+//   } else if (issue1.labels.length > 0) {
+//     similarities.labels = issue1.labels;
+//   }
 
-  if (JSON.stringify(issue1.components.sort()) !== JSON.stringify(issue2.components.sort())) {
-    const commonComponents = issue1.components.filter((c) => issue2.components.includes(c));
-    const uniqueToIssue1 = issue1.components.filter((c) => !issue2.components.includes(c));
-    const uniqueToIssue2 = issue2.components.filter((c) => !issue1.components.includes(c));
+//   if (JSON.stringify(issue1.components.sort()) !== JSON.stringify(issue2.components.sort())) {
+//     const commonComponents = issue1.components.filter((c) => issue2.components.includes(c));
+//     const uniqueToIssue1 = issue1.components.filter((c) => !issue2.components.includes(c));
+//     const uniqueToIssue2 = issue2.components.filter((c) => !issue1.components.includes(c));
 
-    differences.components = {
-      commonComponents,
-      uniqueToIssue1,
-      uniqueToIssue2,
-    };
-  } else if (issue1.components.length > 0) {
-    similarities.components = issue1.components;
-  }
+//     differences.components = {
+//       commonComponents,
+//       uniqueToIssue1,
+//       uniqueToIssue2,
+//     };
+//   } else if (issue1.components.length > 0) {
+//     similarities.components = issue1.components;
+//   }
 
-  // Compare metrics
-  differences.commentCount = {
-    issue1: issue1.commentCount,
-    issue2: issue2.commentCount,
-    difference: Math.abs(issue1.commentCount - issue2.commentCount),
-  };
+//   // Compare metrics
+//   differences.commentCount = {
+//     issue1: issue1.commentCount,
+//     issue2: issue2.commentCount,
+//     difference: Math.abs(issue1.commentCount - issue2.commentCount),
+//   };
 
-  // Age comparison
-  const created1 = new Date(issue1.created);
-  const created2 = new Date(issue2.created);
-  if (created1.getTime() !== created2.getTime()) {
-    differences.created = {
-      issue1: issue1.created,
-      issue2: issue2.created,
-      comparison: created1 < created2 ? `${issue1.key} was created earlier (older)` : `${issue2.key} was created earlier (older)`,
-    };
-  } else {
-    similarities.created = issue1.created;
-  }
+//   // Age comparison
+//   const created1 = new Date(issue1.created);
+//   const created2 = new Date(issue2.created);
+//   if (created1.getTime() !== created2.getTime()) {
+//     differences.created = {
+//       issue1: issue1.created,
+//       issue2: issue2.created,
+//       comparison: created1 < created2 ? `${issue1.key} was created earlier (older)` : `${issue2.key} was created earlier (older)`,
+//     };
+//   } else {
+//     similarities.created = issue1.created;
+//   }
 
-  // Last updated
-  const updated1 = new Date(issue1.updated);
-  const updated2 = new Date(issue2.updated);
-  if (updated1.getTime() !== updated2.getTime()) {
-    differences.updated = {
-      issue1: issue1.updated,
-      issue2: issue2.updated,
-      comparison: updated1 > updated2 ? `${issue1.key} was updated more recently` : `${issue2.key} was updated more recently`,
-    };
-  } else {
-    similarities.updated = issue1.updated;
-  }
+//   // Last updated
+//   const updated1 = new Date(issue1.updated);
+//   const updated2 = new Date(issue2.updated);
+//   if (updated1.getTime() !== updated2.getTime()) {
+//     differences.updated = {
+//       issue1: issue1.updated,
+//       issue2: issue2.updated,
+//       comparison: updated1 > updated2 ? `${issue1.key} was updated more recently` : `${issue2.key} was updated more recently`,
+//     };
+//   } else {
+//     similarities.updated = issue1.updated;
+//   }
 
-  return {
-    differences,
-    similarities,
-    summary: {
-      totalDifferences: Object.keys(differences).length,
-      totalSimilarities: Object.keys(similarities).length,
-      majorDifferences: Object.keys(differences).filter((k) => ["status", "priority", "assignee", "dueDate", "issuetype"].includes(k)),
-      isSummaryDifferent: issue1.summary !== issue2.summary,
-    },
-  };
-}
+//   return {
+//     differences,
+//     similarities,
+//     summary: {
+//       totalDifferences: Object.keys(differences).length,
+//       totalSimilarities: Object.keys(similarities).length,
+//       majorDifferences: Object.keys(differences).filter((k) => ["status", "priority", "assignee", "dueDate", "issuetype"].includes(k)),
+//       isSummaryDifferent: issue1.summary !== issue2.summary,
+//     },
+//   };
+// }
 
 // Special handler for issue types and issue type counts
-async function getIssueTypes(req, res, query, sessionId) {
-  try {
-    // Get issues with their types
-    const issueTypesResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
-      params: {
-        jql: `project = ${process.env.JIRA_PROJECT_KEY}`,
-        maxResults: 1000, // Large enough to get all issue types
-        fields: "issuetype,status",
-      },
-      auth,
-    });
+// async function getIssueTypes(req, res, query, sessionId) {
+//   try {
+//     // Get issues with their types
+//     const issueTypesResponse = await axios.get(`${JIRA_URL}/rest/api/3/search`, {
+//       params: {
+//         jql: `project = ${process.env.JIRA_PROJECT_KEY}`,
+//         maxResults: 1000, // Large enough to get all issue types
+//         fields: "issuetype,status",
+//       },
+//       auth,
+//     });
 
-    if (issueTypesResponse.data && issueTypesResponse.data.issues) {
-      // Extract unique issue types
-      const issueTypes = {};
+//     if (issueTypesResponse.data && issueTypesResponse.data.issues) {
+//       // Extract unique issue types
+//       const issueTypes = {};
 
-      issueTypesResponse.data.issues.forEach((issue) => {
-        const issueType = issue.fields.issuetype;
-        if (issueType && issueType.name) {
-          if (!issueTypes[issueType.name]) {
-            issueTypes[issueType.name] = {
-              count: 0,
-              openCount: 0,
-              id: issueType.id,
-              description: issueType.description || null,
-              iconUrl: issueType.iconUrl || null,
-            };
-          }
-          issueTypes[issueType.name].count++;
+//       issueTypesResponse.data.issues.forEach((issue) => {
+//         const issueType = issue.fields.issuetype;
+//         if (issueType && issueType.name) {
+//           if (!issueTypes[issueType.name]) {
+//             issueTypes[issueType.name] = {
+//               count: 0,
+//               openCount: 0,
+//               id: issueType.id,
+//               description: issueType.description || null,
+//               iconUrl: issueType.iconUrl || null,
+//             };
+//           }
+//           issueTypes[issueType.name].count++;
 
-          // Count open issues of each type
-          const status = issue.fields.status?.name || "";
-          if (status !== "Done" && status !== "Closed" && status !== "Resolved") {
-            issueTypes[issueType.name].openCount++;
-          }
-        }
-      });
+//           // Count open issues of each type
+//           const status = issue.fields.status?.name || "";
+//           if (status !== "Done" && status !== "Closed" && status !== "Resolved") {
+//             issueTypes[issueType.name].openCount++;
+//           }
+//         }
+//       });
 
-      // Check if the query is asking about a specific issue type
-      const askingAboutBugs = /how many bugs|number of bugs|total bugs|bug count|count bugs/i.test(query);
-      const askingAboutStories = /how many stories|number of stories|total stories|story count|count stories/i.test(query);
-      const askingAboutTasks = /how many tasks|number of tasks|total tasks|task count|count tasks/i.test(query);
+//       // Check if the query is asking about a specific issue type
+//       const askingAboutBugs = /how many bugs|number of bugs|total bugs|bug count|count bugs/i.test(query);
+//       const askingAboutStories = /how many stories|number of stories|total stories|story count|count stories/i.test(query);
+//       const askingAboutTasks = /how many tasks|number of tasks|total tasks|task count|count tasks/i.test(query);
 
-      if (askingAboutBugs || askingAboutStories || askingAboutTasks) {
-        let typeName = "";
-        if (askingAboutBugs) typeName = "Bug";
-        else if (askingAboutStories) typeName = "Story";
-        else if (askingAboutTasks) typeName = "Task";
+//       if (askingAboutBugs || askingAboutStories || askingAboutTasks) {
+//         let typeName = "";
+//         if (askingAboutBugs) typeName = "Bug";
+//         else if (askingAboutStories) typeName = "Story";
+//         else if (askingAboutTasks) typeName = "Task";
 
-        // Check if this type exists in the project
-        if (issueTypes[typeName]) {
-          const typeData = issueTypes[typeName];
-          const totalCount = typeData.count;
-          const openCount = typeData.openCount;
-          const percentage = Math.round((totalCount / issueTypesResponse.data.total) * 100);
+//         // Check if this type exists in the project
+//         if (issueTypes[typeName]) {
+//           const typeData = issueTypes[typeName];
+//           const totalCount = typeData.count;
+//           const openCount = typeData.openCount;
+//           const percentage = Math.round((totalCount / issueTypesResponse.data.total) * 100);
 
-          let formattedResponse = `## ${typeName}s in ${process.env.JIRA_PROJECT_KEY}\n\n`;
-          formattedResponse += `There are **${totalCount} ${typeName.toLowerCase()}s** in the project`;
+//           let formattedResponse = `## ${typeName}s in ${process.env.JIRA_PROJECT_KEY}\n\n`;
+//           formattedResponse += `There are **${totalCount} ${typeName.toLowerCase()}s** in the project`;
 
-          if (openCount > 0) {
-            formattedResponse += `, with **${openCount}** of them currently open/active`;
-          }
+//           if (openCount > 0) {
+//             formattedResponse += `, with **${openCount}** of them currently open/active`;
+//           }
 
-          formattedResponse += `.\n\n`;
+//           formattedResponse += `.\n\n`;
 
-          if (percentage > 0) {
-            formattedResponse += `${typeName}s make up **${percentage}%** of all issues in the project.`;
-          }
+//           if (percentage > 0) {
+//             formattedResponse += `${typeName}s make up **${percentage}%** of all issues in the project.`;
+//           }
 
-          // Store in conversation memory
-          if (conversationMemory[sessionId]) {
-            conversationMemory[sessionId].lastResponse = formattedResponse;
-          }
+//           // Store in conversation memory
+//           if (conversationMemory[sessionId]) {
+//             conversationMemory[sessionId].lastResponse = formattedResponse;
+//           }
 
-          return res.json({
-            message: formattedResponse,
-            meta: {
-              intent: "ISSUE_TYPES",
-              specificType: typeName,
-            },
-          });
-        } else {
-          // Handle case where the requested type doesn't exist
-          let formattedResponse = `## ${typeName}s in ${process.env.JIRA_PROJECT_KEY}\n\n`;
-          formattedResponse += `I couldn't find any issues of type "${typeName}" in this project. `;
-          formattedResponse += `\n\nThe issue types that exist in this project are:\n\n`;
+//           return res.json({
+//             message: formattedResponse,
+//             meta: {
+//               intent: "ISSUE_TYPES",
+//               specificType: typeName,
+//             },
+//           });
+//         } else {
+//           // Handle case where the requested type doesn't exist
+//           let formattedResponse = `## ${typeName}s in ${process.env.JIRA_PROJECT_KEY}\n\n`;
+//           formattedResponse += `I couldn't find any issues of type "${typeName}" in this project. `;
+//           formattedResponse += `\n\nThe issue types that exist in this project are:\n\n`;
 
-          Object.keys(issueTypes).forEach((type) => {
-            formattedResponse += `• **${type}**: ${issueTypes[type].count} issues\n`;
-          });
+//           Object.keys(issueTypes).forEach((type) => {
+//             formattedResponse += `• **${type}**: ${issueTypes[type].count} issues\n`;
+//           });
 
-          // Store in conversation memory
-          if (conversationMemory[sessionId]) {
-            conversationMemory[sessionId].lastResponse = formattedResponse;
-          }
+//           // Store in conversation memory
+//           if (conversationMemory[sessionId]) {
+//             conversationMemory[sessionId].lastResponse = formattedResponse;
+//           }
 
-          return res.json({
-            message: formattedResponse,
-            meta: {
-              intent: "ISSUE_TYPES",
-              specificType: typeName,
-              typeExists: false,
-            },
-          });
-        }
-      }
+//           return res.json({
+//             message: formattedResponse,
+//             meta: {
+//               intent: "ISSUE_TYPES",
+//               specificType: typeName,
+//               typeExists: false,
+//             },
+//           });
+//         }
+//       }
 
-      // For general issue types queries (not asking about a specific count)
-      try {
-        const issueTypesData = {
-          projectKey: process.env.JIRA_PROJECT_KEY,
-          totalIssues: issueTypesResponse.data.total,
-          issueTypes: Object.entries(issueTypes).map(([name, data]) => ({
-            name,
-            count: data.count,
-            openCount: data.openCount,
-            percentage: Math.round((data.count / issueTypesResponse.data.total) * 100),
-          })),
-        };
+//       // For general issue types queries (not asking about a specific count)
+//       try {
+//         const issueTypesData = {
+//           projectKey: process.env.JIRA_PROJECT_KEY,
+//           totalIssues: issueTypesResponse.data.total,
+//           issueTypes: Object.entries(issueTypes).map(([name, data]) => ({
+//             name,
+//             count: data.count,
+//             openCount: data.openCount,
+//             percentage: Math.round((data.count / issueTypesResponse.data.total) * 100),
+//           })),
+//         };
 
-        const prompt = `
-          You are a helpful Jira assistant providing information about issue types in a project.
+//         const prompt = `
+//           You are a helpful Jira assistant providing information about issue types in a project.
           
-          Create a conversational, helpful response about the work types (also known as issue types) in the project.
-          Be very clear that these are the official issue types/work types in the project.
+//           Create a conversational, helpful response about the work types (also known as issue types) in the project.
+//           Be very clear that these are the official issue types/work types in the project.
           
-          Make your response conversational and easy to read.
-          Use markdown formatting to organize the information.
-          Limit details to what's necessary - be concise but informative.
-        `;
+//           Make your response conversational and easy to read.
+//           Use markdown formatting to organize the information.
+//           Limit details to what's necessary - be concise but informative.
+//         `;
 
-        const aiResponse = await openai.chat.completions.create({
-          model: "gpt-4",
-          messages: [
-            { role: "system", content: prompt },
-            { role: "user", content: `Issue types data: ${JSON.stringify(issueTypesData)}` },
-          ],
-          temperature: 0.7,
-        });
+//         const aiResponse = await openai.chat.completions.create({
+//           model: "gpt-4",
+//           messages: [
+//             { role: "system", content: prompt },
+//             { role: "user", content: `Issue types data: ${JSON.stringify(issueTypesData)}` },
+//           ],
+//           temperature: 0.7,
+//         });
 
-        const formattedResponse = aiResponse.choices[0].message.content;
-        if (jiraData.jql) {
-          const jiraFilterLink = createJiraFilterLink(jiraData.jql);
-          formattedResponse += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
-        }
+//         const formattedResponse = aiResponse.choices[0].message.content;
+//         if (jiraData.jql) {
+//           const jiraFilterLink = createJiraFilterLink(jiraData.jql);
+//           formattedResponse += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
+//         }
 
 
-        // Store in conversation memory
-        if (conversationMemory[sessionId]) {
-          conversationMemory[sessionId].lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (conversationMemory[sessionId]) {
+//           conversationMemory[sessionId].lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "ISSUE_TYPES",
-          },
-        });
-      } catch (aiError) {
-        console.error("Error generating AI issue types response:", aiError);
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "ISSUE_TYPES",
+//           },
+//         });
+//       } catch (aiError) {
+//         console.error("Error generating AI issue types response:", aiError);
 
-        // Fallback to a simpler format
-        let formattedResponse = `## Work Types in ${process.env.JIRA_PROJECT_KEY}\n\n`;
+//         // Fallback to a simpler format
+//         let formattedResponse = `## Work Types in ${process.env.JIRA_PROJECT_KEY}\n\n`;
 
-        // Sort issue types by count (most common first)
-        const sortedTypes = Object.entries(issueTypes).sort((a, b) => b[1].count - a[1].count);
+//         // Sort issue types by count (most common first)
+//         const sortedTypes = Object.entries(issueTypes).sort((a, b) => b[1].count - a[1].count);
 
-        formattedResponse += `In this project, there are ${sortedTypes.length} work types (issue types):\n\n`;
+//         formattedResponse += `In this project, there are ${sortedTypes.length} work types (issue types):\n\n`;
 
-        sortedTypes.forEach(([typeName, typeData]) => {
-          const percentage = Math.round((typeData.count / issueTypesResponse.data.total) * 100);
-          formattedResponse += `**${typeName}**: ${typeData.count} issues (${percentage}% of total)`;
+//         sortedTypes.forEach(([typeName, typeData]) => {
+//           const percentage = Math.round((typeData.count / issueTypesResponse.data.total) * 100);
+//           formattedResponse += `**${typeName}**: ${typeData.count} issues (${percentage}% of total)`;
 
-          if (typeData.openCount > 0) {
-            formattedResponse += ` - ${typeData.openCount} open/active`;
-          }
+//           if (typeData.openCount > 0) {
+//             formattedResponse += ` - ${typeData.openCount} open/active`;
+//           }
 
-          formattedResponse += `\n`;
-        });
+//           formattedResponse += `\n`;
+//         });
 
-        formattedResponse += `\nThese are the official work types defined in your Jira project.`;
+//         formattedResponse += `\nThese are the official work types defined in your Jira project.`;
 
-        // Store in conversation memory
-        if (conversationMemory[sessionId]) {
-          conversationMemory[sessionId].lastResponse = formattedResponse;
-        }
+//         // Store in conversation memory
+//         if (conversationMemory[sessionId]) {
+//           conversationMemory[sessionId].lastResponse = formattedResponse;
+//         }
 
-        return res.json({
-          message: formattedResponse,
-          meta: {
-            intent: "ISSUE_TYPES",
-          },
-        });
-      }
-    }
+//         return res.json({
+//           message: formattedResponse,
+//           meta: {
+//             intent: "ISSUE_TYPES",
+//           },
+//         });
+//       }
+//     }
 
-    return null; // Continue with normal processing if no issues found
-  } catch (error) {
-    console.error("Error handling issue types query:", error);
-    return null; // Continue with normal processing
-  }
-}
+//     return null; // Continue with normal processing if no issues found
+//   } catch (error) {
+//     console.error("Error handling issue types query:", error);
+//     return null; // Continue with normal processing
+//   }
+// }
 
 // Enhanced response generation function with better conversational capabilities
-async function generateResponse(query, jiraData, intent, context = {}) {
-  // Basic data checks
-  if (!jiraData || !jiraData.issues) {
-    return "I couldn't find any relevant information for your query.";
-  }
+// async function generateResponse(query, jiraData, intent, context = {}) {
+//   // Basic data checks
+//   if (!jiraData || !jiraData.issues) {
+//     return "I couldn't find any relevant information for your query.";
+//   }
 
-  const issueCount = jiraData.issues.length;
-  const totalCount = jiraData.total;
+//   const issueCount = jiraData.issues.length;
+//   const totalCount = jiraData.total;
 
-  // Handle empty results case specifically
-  if (issueCount === 0) {
-    const noResultsResponses = [
-      "I couldn't find any issues matching your criteria. Would you like to try a different search?",
-      "I looked, but didn't find any matching issues in Jira. Could you try rephrasing your question?",
-      "No results found for that query. Maybe we could try a broader search?",
-      "I don't see any issues that match what you're looking for. Let me know if you'd like to try a different approach.",
-    ];
-    return noResultsResponses[Math.floor(Math.random() * noResultsResponses.length)];
-  }
+//   // Handle empty results case specifically
+//   if (issueCount === 0) {
+//     const noResultsResponses = [
+//       "I couldn't find any issues matching your criteria. Would you like to try a different search?",
+//       "I looked, but didn't find any matching issues in Jira. Could you try rephrasing your question?",
+//       "No results found for that query. Maybe we could try a broader search?",
+//       "I don't see any issues that match what you're looking for. Let me know if you'd like to try a different approach.",
+//     ];
+//     return noResultsResponses[Math.floor(Math.random() * noResultsResponses.length)];
+//   }
 
-  // Handle greeting and conversational intents specially
-  if (intent === "GREETING") {
-    const greetingResponses = [
-      "Hi there! I'm your Jira assistant. I can help you with:\n\n• Finding tasks and issues\n• Checking project status\n• Understanding who's working on what\n• Tracking blockers and high-priority items\n• Monitoring deadlines and timelines\n\nJust ask me a question about your Jira project!",
-      "Hello! I'm here to help you navigate your Jira project. You can ask me about:\n\n• Open and closed tasks\n• Task assignments and ownership\n• Project timelines and deadlines\n• High priority issues and blockers\n• Recent updates and changes\n\nWhat would you like to know about your project today?",
-      'Hey! I\'m your Jira chatbot assistant. Some things you can ask me:\n\n• "What\'s the status of our project?"\n• "Show me open bugs assigned to Sarah"\n• "Any blockers in the current sprint?"\n• "Tell me about NIHK-123"\n• "What\'s due this week?"\n\nHow can I help you today?',
-    ];
-    return greetingResponses[Math.floor(Math.random() * greetingResponses.length)];
-  }
+//   // Handle greeting and conversational intents specially
+//   if (intent === "GREETING") {
+//     const greetingResponses = [
+//       "Hi there! I'm your Jira assistant. I can help you with:\n\n• Finding tasks and issues\n• Checking project status\n• Understanding who's working on what\n• Tracking blockers and high-priority items\n• Monitoring deadlines and timelines\n\nJust ask me a question about your Jira project!",
+//       "Hello! I'm here to help you navigate your Jira project. You can ask me about:\n\n• Open and closed tasks\n• Task assignments and ownership\n• Project timelines and deadlines\n• High priority issues and blockers\n• Recent updates and changes\n\nWhat would you like to know about your project today?",
+//       'Hey! I\'m your Jira chatbot assistant. Some things you can ask me:\n\n• "What\'s the status of our project?"\n• "Show me open bugs assigned to Sarah"\n• "Any blockers in the current sprint?"\n• "Tell me about NIHK-123"\n• "What\'s due this week?"\n\nHow can I help you today?',
+//     ];
+//     return greetingResponses[Math.floor(Math.random() * greetingResponses.length)];
+//   }
 
-  if (intent === "CONVERSATION") {
-    // Pull out recent project activity for conversational context
-    const recentActivity = jiraData.issues.slice(0, 3).map((issue) => ({
-      key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status?.name || "Unknown",
-    }));
+//   if (intent === "CONVERSATION") {
+//     // Pull out recent project activity for conversational context
+//     const recentActivity = jiraData.issues.slice(0, 3).map((issue) => ({
+//       key: issue.key,
+//       summary: issue.fields.summary,
+//       status: issue.fields.status?.name || "Unknown",
+//     }));
 
-    const conversationPrompt = `
-      You are a friendly Jira assistant chatting with a user. The user has said: "${query}"
+//     const conversationPrompt = `
+//       You are a friendly Jira assistant chatting with a user. The user has said: "${query}"
       
-      This appears to be a conversational follow-up rather than a direct query about Jira data.
+//       This appears to be a conversational follow-up rather than a direct query about Jira data.
       
-      Some recent activity in the project includes:
-      ${recentActivity.map((i) => `- ${i.key}: ${i.summary} (${i.status})`).join("\n")}
+//       Some recent activity in the project includes:
+//       ${recentActivity.map((i) => `- ${i.key}: ${i.summary} (${i.status})`).join("\n")}
       
-      Respond in a friendly, helpful way. If they're asking for more information or clarification,
-      offer to help them by suggesting specific types of queries they could ask. If they're
-      expressing appreciation, acknowledge it warmly and ask if they need anything else.
+//       Respond in a friendly, helpful way. If they're asking for more information or clarification,
+//       offer to help them by suggesting specific types of queries they could ask. If they're
+//       expressing appreciation, acknowledge it warmly and ask if they need anything else.
       
-      Don't fabricate Jira data that wasn't provided. Make your response conversational and natural.
-    `;
+//       Don't fabricate Jira data that wasn't provided. Make your response conversational and natural.
+//     `;
 
-    try {
-      const response = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: [
-          { role: "system", content: conversationPrompt },
-          { role: "user", content: query },
-        ],
-        temperature: 0.7,
-      });
+//     try {
+//       const response = await openai.chat.completions.create({
+//         model: "gpt-4",
+//         messages: [
+//           { role: "system", content: conversationPrompt },
+//           { role: "user", content: query },
+//         ],
+//         temperature: 0.7,
+//       });
 
-      return response.choices[0].message.content.trim();
-    } catch (error) {
-      console.error("Error generating conversational response:", error);
-      return "I'm here to help with your Jira queries. What would you like to know about your project?";
-    }
-  }
+//       return response.choices[0].message.content.trim();
+//     } catch (error) {
+//       console.error("Error generating conversational response:", error);
+//       return "I'm here to help with your Jira queries. What would you like to know about your project?";
+//     }
+//   }
 
-  try {
-    // Create a more varied and context-aware system prompt based on intent
-    let systemPrompt = `
-      You are a helpful, friendly Jira project assistant providing information in a conversational, natural tone.
+//   try {
+//     // Create a more varied and context-aware system prompt based on intent
+//     let systemPrompt = `
+//       You are a helpful, friendly Jira project assistant providing information in a conversational, natural tone.
       
-      Format requirements for the frontend:
-      - Use markdown formatting that works with the frontend:
-        - ## for main headers (issue keys)
-        - ### for section headers
-        - **bold** for field names and important information
-        - • or - for bullet points
-        - Line breaks to separate sections
-    `;
+//       Format requirements for the frontend:
+//       - Use markdown formatting that works with the frontend:
+//         - ## for main headers (issue keys)
+//         - ### for section headers
+//         - **bold** for field names and important information
+//         - • or - for bullet points
+//         - Line breaks to separate sections
+//     `;
 
-    // Add intent-specific guidance
-    if (intent === "PROJECT_STATUS") {
-      systemPrompt += `
-        For PROJECT_STATUS intent:
-        - Begin with a conversational summary of the project's current state
-        - Highlight key metrics (open issues, in progress, completed)
-        - Mention any critical or high priority items
-        - Add insights about progress and bottlenecks
-        - Organize information in a clear, scannable way
-        - ALWAYS include specific numbers and counts
-      `;
-    } else if (intent === "TASK_LIST") {
-      systemPrompt += `
-        For TASK_LIST intent:
-        - Start with a brief overview of the results ("I found X tasks...")
-        - Group tasks logically (by status, priority, etc.)
-        - For each task, include the key, summary, status and assignee
-        - Limit to showing 5-7 tasks with a note about the rest
-        - Add a brief insight about the tasks if possible
-        - ALWAYS include the total count, group them by status or priority if applicable
-        - If user asks for more details, suggest they ask about a specific task key
-        - If user asks for a count of tasks (specific or overall), provide that count clearly
-      `;
-    } else if (intent === "ASSIGNED_TASKS") {
-      systemPrompt += `
-        For ASSIGNED_TASKS intent:
-        - Group tasks by assignee in a clear structure
-        - For each person, list 2-3 of their most important tasks
-        - Include task key, summary and status
-        - Add a brief comment about each person's workload
-        - Highlight any potential overloading or imbalances
-        - Be specific about counts and distribution
-      `;
-    } else if (intent === "TASK_DETAILS") {
-      systemPrompt += `
-        For TASK_DETAILS intent:
-        - Use a clear header with the issue key and summary
-        - In the header, format the issue key as a clickable markdown link like [IHKA-123](https://asioso.atlassian.net/browse/IHKA-123)
-        - Organize details into logical sections
-        - Include all important fields (status, priority, assignee, dates)
-        - Format description and comments for readability
-        - Highlight the most recent or important information
-        - NEVER omit important information
-        - Use [IHKA-123](https://asioso.atlassian.net/browse/IHKA-123) format to make Jira issue keys clickable
-      `;
-    } else if (intent === "BLOCKERS") {
-      systemPrompt += `
-        For BLOCKERS intent:
-        - Use slightly urgent language appropriate for blockers
-        - Clearly identify the most critical issues first
-        - For each blocker, include who it's assigned to and its status
-        - Group by priority if there are multiple blockers
-        - Suggest possible next steps if appropriate
-        - Be precise about what's blocking and why
-      `;
-    } else if (intent === "TIMELINE") {
-      systemPrompt += `
-        For TIMELINE intent:
-        - Organize items chronologically
-        - Group by timeframe (this week, next week, this month)
-        - Highlight upcoming deadlines
-        - Include due dates, current status, and assignees
-        - Add context about timing and priorities
-        - If tasks are overdue, clearly mark them as such
-      `;
-    } else if (intent === "COMMENTS") {
-      systemPrompt += `
-        For COMMENTS intent:
-        - Show the most recent comments first
-        - Include the author and date for each comment
-        - Format the comment text for readability
-        - Provide context around what the comment is referring to
-        - Highlight important points from the comments
-      `;
-    } else if (intent === "WORKLOAD") {
-      systemPrompt += `
-        For WORKLOAD intent:
-        - Compare team members' workloads
-        - Show who has the most and least tasks
-        - Highlight who has high priority items
-        - Note any potential overloading
-        - Suggest workload balancing if needed
-      `;
-    } else if (intent === "SPRINT") {
-      systemPrompt += `
-        For SPRINT intent:
-        - Provide an overview of the current sprint status
-        - Group issues by status (to do, in progress, done)
-        - Highlight progress (% complete, days remaining)
-        - Note any blockers or at-risk items
-        - Keep the tone conversational and insightful
-      `;
-    } else if (intent === "ISSUE_TYPES") {
-      systemPrompt += `
-        For ISSUE_TYPES intent:
-        - Begin with a clear statement about the work types (issue types) in the project
-        - List each type with its count and percentage of total issues
-        - Keep explanations concise and focused on the official types
-        - Mention that these are the official work/issue types defined in the project
-        - Always include counts and percentages
-      `;
-    }
+//     // Add intent-specific guidance
+//     if (intent === "PROJECT_STATUS") {
+//       systemPrompt += `
+//         For PROJECT_STATUS intent:
+//         - Begin with a conversational summary of the project's current state
+//         - Highlight key metrics (open issues, in progress, completed)
+//         - Mention any critical or high priority items
+//         - Add insights about progress and bottlenecks
+//         - Organize information in a clear, scannable way
+//         - ALWAYS include specific numbers and counts
+//       `;
+//     } else if (intent === "TASK_LIST") {
+//       systemPrompt += `
+//         For TASK_LIST intent:
+//         - Start with a brief overview of the results ("I found X tasks...")
+//         - Group tasks logically (by status, priority, etc.)
+//         - For each task, include the key, summary, status and assignee
+//         - Limit to showing 5-7 tasks with a note about the rest
+//         - Add a brief insight about the tasks if possible
+//         - ALWAYS include the total count, group them by status or priority if applicable
+//         - If user asks for more details, suggest they ask about a specific task key
+//         - If user asks for a count of tasks (specific or overall), provide that count clearly
+//       `;
+//     } else if (intent === "ASSIGNED_TASKS") {
+//       systemPrompt += `
+//         For ASSIGNED_TASKS intent:
+//         - Group tasks by assignee in a clear structure
+//         - For each person, list 2-3 of their most important tasks
+//         - Include task key, summary and status
+//         - Add a brief comment about each person's workload
+//         - Highlight any potential overloading or imbalances
+//         - Be specific about counts and distribution
+//       `;
+//     } else if (intent === "TASK_DETAILS") {
+//       systemPrompt += `
+//         For TASK_DETAILS intent:
+//         - Use a clear header with the issue key and summary
+//         - In the header, format the issue key as a clickable markdown link like [IHKA-123](https://asioso.atlassian.net/browse/IHKA-123)
+//         - Organize details into logical sections
+//         - Include all important fields (status, priority, assignee, dates)
+//         - Format description and comments for readability
+//         - Highlight the most recent or important information
+//         - NEVER omit important information
+//         - Use [IHKA-123](https://asioso.atlassian.net/browse/IHKA-123) format to make Jira issue keys clickable
+//       `;
+//     } else if (intent === "BLOCKERS") {
+//       systemPrompt += `
+//         For BLOCKERS intent:
+//         - Use slightly urgent language appropriate for blockers
+//         - Clearly identify the most critical issues first
+//         - For each blocker, include who it's assigned to and its status
+//         - Group by priority if there are multiple blockers
+//         - Suggest possible next steps if appropriate
+//         - Be precise about what's blocking and why
+//       `;
+//     } else if (intent === "TIMELINE") {
+//       systemPrompt += `
+//         For TIMELINE intent:
+//         - Organize items chronologically
+//         - Group by timeframe (this week, next week, this month)
+//         - Highlight upcoming deadlines
+//         - Include due dates, current status, and assignees
+//         - Add context about timing and priorities
+//         - If tasks are overdue, clearly mark them as such
+//       `;
+//     } else if (intent === "COMMENTS") {
+//       systemPrompt += `
+//         For COMMENTS intent:
+//         - Show the most recent comments first
+//         - Include the author and date for each comment
+//         - Format the comment text for readability
+//         - Provide context around what the comment is referring to
+//         - Highlight important points from the comments
+//       `;
+//     } else if (intent === "WORKLOAD") {
+//       systemPrompt += `
+//         For WORKLOAD intent:
+//         - Compare team members' workloads
+//         - Show who has the most and least tasks
+//         - Highlight who has high priority items
+//         - Note any potential overloading
+//         - Suggest workload balancing if needed
+//       `;
+//     } else if (intent === "SPRINT") {
+//       systemPrompt += `
+//         For SPRINT intent:
+//         - Provide an overview of the current sprint status
+//         - Group issues by status (to do, in progress, done)
+//         - Highlight progress (% complete, days remaining)
+//         - Note any blockers or at-risk items
+//         - Keep the tone conversational and insightful
+//       `;
+//     } else if (intent === "ISSUE_TYPES") {
+//       systemPrompt += `
+//         For ISSUE_TYPES intent:
+//         - Begin with a clear statement about the work types (issue types) in the project
+//         - List each type with its count and percentage of total issues
+//         - Keep explanations concise and focused on the official types
+//         - Mention that these are the official work/issue types defined in the project
+//         - Always include counts and percentages
+//       `;
+//     }
 
-    systemPrompt += `
-      General guidelines:
-      - Maintain a conversational, helpful tone throughout
-      - Begin with a direct response to their query, then provide supporting details
-      - Keep lists concise - show 5 items max and summarize the rest if there are more
-      - Show Jira issue keys in their original format (${process.env.JIRA_PROJECT_KEY}-123) 
-      - Vary your language patterns and openings to sound natural
-      - Add relevant insights beyond just listing data
-      - Include specific counts and metrics when available
-      - Adjust your tone based on the urgency/priority of the issues
-      - Never mention JQL or technical implementation details
-      - End with a brief, helpful question or suggestion if appropriate
+//     systemPrompt += `
+//       General guidelines:
+//       - Maintain a conversational, helpful tone throughout
+//       - Begin with a direct response to their query, then provide supporting details
+//       - Keep lists concise - show 5 items max and summarize the rest if there are more
+//       - Show Jira issue keys in their original format (${process.env.JIRA_PROJECT_KEY}-123) 
+//       - Vary your language patterns and openings to sound natural
+//       - Add relevant insights beyond just listing data
+//       - Include specific counts and metrics when available
+//       - Adjust your tone based on the urgency/priority of the issues
+//       - Never mention JQL or technical implementation details
+//       - End with a brief, helpful question or suggestion if appropriate
 
-      The query intent is: ${intent}
-      The user asked: "${query}"
-    `;
+//       The query intent is: ${intent}
+//       The user asked: "${query}"
+//     `;
 
-    // Prepare a condensed version of the Jira data
-    const condensedIssues = jiraData.issues.map((issue) => ({
-      key: issue.key,
-      summary: issue.fields.summary,
-      status: issue.fields.status?.name || "Unknown",
-      priority: issue.fields.priority?.name || "Unknown",
-      assignee: issue.fields.assignee?.displayName || "Unassigned",
-      created: issue.fields.created,
-      updated: issue.fields.updated,
-      dueDate: issue.fields.duedate || "No due date",
-      comments:
-        issue.fields.comment?.comments?.length > 0
-          ? {
-              count: issue.fields.comment.comments.length,
-              latest: {
-                author: issue.fields.comment.comments[issue.fields.comment.comments.length - 1].author?.displayName || "Unknown",
-                created: issue.fields.comment.comments[issue.fields.comment.comments.length - 1].created,
-                body:
-                  typeof issue.fields.comment.comments[issue.fields.comment.comments.length - 1].body === "string"
-                    ? issue.fields.comment.comments[issue.fields.comment.comments.length - 1].body.substring(0, 150) + "..."
-                    : "Complex formatted comment",
-              },
-            }
-          : null,
-      description: issue.fields.description ? "Has description" : "No description",
-      issuetype: issue.fields.issuetype?.name || "Unknown",
-    }));
+//     // Prepare a condensed version of the Jira data
+//     const condensedIssues = jiraData.issues.map((issue) => ({
+//       key: issue.key,
+//       summary: issue.fields.summary,
+//       status: issue.fields.status?.name || "Unknown",
+//       priority: issue.fields.priority?.name || "Unknown",
+//       assignee: issue.fields.assignee?.displayName || "Unassigned",
+//       created: issue.fields.created,
+//       updated: issue.fields.updated,
+//       dueDate: issue.fields.duedate || "No due date",
+//       comments:
+//         issue.fields.comment?.comments?.length > 0
+//           ? {
+//               count: issue.fields.comment.comments.length,
+//               latest: {
+//                 author: issue.fields.comment.comments[issue.fields.comment.comments.length - 1].author?.displayName || "Unknown",
+//                 created: issue.fields.comment.comments[issue.fields.comment.comments.length - 1].created,
+//                 body:
+//                   typeof issue.fields.comment.comments[issue.fields.comment.comments.length - 1].body === "string"
+//                     ? issue.fields.comment.comments[issue.fields.comment.comments.length - 1].body.substring(0, 150) + "..."
+//                     : "Complex formatted comment",
+//               },
+//             }
+//           : null,
+//       description: issue.fields.description ? "Has description" : "No description",
+//       issuetype: issue.fields.issuetype?.name || "Unknown",
+//     }));
 
-    // Add analysis of the query and data to provide context
-    const queryAnalysis = {
-      seemsUrgent: /urgent|asap|immediately|critical|blocker/i.test(query),
-      mentionsTime: /due date|deadline|when|timeline|schedule|milestone/i.test(query),
-      mentionsPerson: /assigned to|working on|responsible for/i.test(query),
-      isSpecific: /specific|exactly|precisely|only/i.test(query),
-      requestsCount: /how many|count|number of/i.test(query),
-    };
+//     // Add analysis of the query and data to provide context
+//     const queryAnalysis = {
+//       seemsUrgent: /urgent|asap|immediately|critical|blocker/i.test(query),
+//       mentionsTime: /due date|deadline|when|timeline|schedule|milestone/i.test(query),
+//       mentionsPerson: /assigned to|working on|responsible for/i.test(query),
+//       isSpecific: /specific|exactly|precisely|only/i.test(query),
+//       requestsCount: /how many|count|number of/i.test(query),
+//     };
 
-    // Calculate basic statistics to enrich the response
-    const statistics = {
-      statusBreakdown: condensedIssues.reduce((acc, issue) => {
-        acc[issue.status] = (acc[issue.status] || 0) + 1;
-        return acc;
-      }, {}),
-      priorityBreakdown: condensedIssues.reduce((acc, issue) => {
-        acc[issue.priority] = (acc[issue.priority] || 0) + 1;
-        return acc;
-      }, {}),
-      assigneeBreakdown: condensedIssues.reduce((acc, issue) => {
-        const assignee = issue.assignee || "Unassigned";
-        acc[assignee] = (acc[assignee] || 0) + 1;
-        return acc;
-      }, {}),
-    };
+//     // Calculate basic statistics to enrich the response
+//     const statistics = {
+//       statusBreakdown: condensedIssues.reduce((acc, issue) => {
+//         acc[issue.status] = (acc[issue.status] || 0) + 1;
+//         return acc;
+//       }, {}),
+//       priorityBreakdown: condensedIssues.reduce((acc, issue) => {
+//         acc[issue.priority] = (acc[issue.priority] || 0) + 1;
+//         return acc;
+//       }, {}),
+//       assigneeBreakdown: condensedIssues.reduce((acc, issue) => {
+//         const assignee = issue.assignee || "Unassigned";
+//         acc[assignee] = (acc[assignee] || 0) + 1;
+//         return acc;
+//       }, {}),
+//     };
 
-    // Add conversation context if available
-    const conversationContext = context.previousQueries
-      ? {
-          previousQueries: context.previousQueries.slice(-3),
-          previousIntents: context.previousIntents?.slice(-3),
-          lastResponse: context.lastResponse,
-          // Track the specific issues, assignees, or topics from previous messages
-          recentMentionedIssues: extractRecentIssues(context.previousQueries),
-          recentMentionedAssignees: extractRecentAssignees(context.previousQueries),
-        }
-      : {};
+//     // Add conversation context if available
+//     const conversationContext = context.previousQueries
+//       ? {
+//           previousQueries: context.previousQueries.slice(-3),
+//           previousIntents: context.previousIntents?.slice(-3),
+//           lastResponse: context.lastResponse,
+//           // Track the specific issues, assignees, or topics from previous messages
+//           recentMentionedIssues: extractRecentIssues(context.previousQueries),
+//           recentMentionedAssignees: extractRecentAssignees(context.previousQueries),
+//         }
+//       : {};
 
-    const contextData = {
-      query,
-      total: jiraData.total,
-      shownCount: condensedIssues.length,
-      issues: condensedIssues,
-      queryAnalysis,
-      statistics,
-      ...conversationContext,
-    };
+//     const contextData = {
+//       query,
+//       total: jiraData.total,
+//       shownCount: condensedIssues.length,
+//       issues: condensedIssues,
+//       queryAnalysis,
+//       statistics,
+//       ...conversationContext,
+//     };
 
-    // Adjust temperature based on intent
-    let temperature = 0.7; // Default
-    if (intent === "TASK_DETAILS" || intent === "PROJECT_STATUS") {
-      temperature = 0.4; // Lower for factual responses
-    } else if (intent === "CONVERSATION" || intent === "GREETING") {
-      temperature = 0.8; // Higher for conversational responses
-    }
+//     // Adjust temperature based on intent
+//     let temperature = 0.7; // Default
+//     if (intent === "TASK_DETAILS" || intent === "PROJECT_STATUS") {
+//       temperature = 0.4; // Lower for factual responses
+//     } else if (intent === "CONVERSATION" || intent === "GREETING") {
+//       temperature = 0.8; // Higher for conversational responses
+//     }
 
-    // Use a higher temperature for more varied responses
-    const response = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: `Query: "${query}"\nJira data: ${JSON.stringify(contextData)}\n\nGenerate a helpful, conversational response.`,
-        },
-      ],
-      temperature: temperature,
-      max_tokens: 800, // Ensure we get a full, detailed response
-    });
+//     // Use a higher temperature for more varied responses
+//     const response = await openai.chat.completions.create({
+//       model: "gpt-4",
+//       messages: [
+//         { role: "system", content: systemPrompt },
+//         {
+//           role: "user",
+//           content: `Query: "${query}"\nJira data: ${JSON.stringify(contextData)}\n\nGenerate a helpful, conversational response.`,
+//         },
+//       ],
+//       temperature: temperature,
+//       max_tokens: 800, // Ensure we get a full, detailed response
+//     });
 
-    return response.choices[0].message.content.trim();
-  } catch (error) {
-    console.error("Error generating response:", error);
+//     return response.choices[0].message.content.trim();
+//   } catch (error) {
+//     console.error("Error generating response:", error);
 
-    // Intent-specific fallback responses
-    // This ensures that even if AI fails, we provide a relevant, helpful response
+//     // Intent-specific fallback responses
+//     // This ensures that even if AI fails, we provide a relevant, helpful response
 
-    if (intent === "PROJECT_STATUS") {
-      let response = `## Project Status Overview\n\n`;
+//     if (intent === "PROJECT_STATUS") {
+//       let response = `## Project Status Overview\n\n`;
 
-      // Calculate basic statistics
-      const statusCounts = {};
-      jiraData.issues.forEach((issue) => {
-        const status = issue.fields.status?.name || "Unknown";
-        statusCounts[status] = (statusCounts[status] || 0) + 1;
-      });
+//       // Calculate basic statistics
+//       const statusCounts = {};
+//       jiraData.issues.forEach((issue) => {
+//         const status = issue.fields.status?.name || "Unknown";
+//         statusCounts[status] = (statusCounts[status] || 0) + 1;
+//       });
 
-      // Add status breakdown
-      response += `Here's the current status of the project:\n\n`;
-      for (const [status, count] of Object.entries(statusCounts)) {
-        response += `• **${status}**: ${count} issues\n`;
-      }
+//       // Add status breakdown
+//       response += `Here's the current status of the project:\n\n`;
+//       for (const [status, count] of Object.entries(statusCounts)) {
+//         response += `• **${status}**: ${count} issues\n`;
+//       }
 
-      // Add recent activity
-      response += `\n### Recent Activity\n`;
-      for (let i = 0; i < Math.min(3, issueCount); i++) {
-        const issue = jiraData.issues[i];
-        const status = issue.fields.status?.name || "Unknown";
-        response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
-      }
+//       // Add recent activity
+//       response += `\n### Recent Activity\n`;
+//       for (let i = 0; i < Math.min(3, issueCount); i++) {
+//         const issue = jiraData.issues[i];
+//         const status = issue.fields.status?.name || "Unknown";
+//         response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
+//       }
 
-      return response;
-    }
+//       return response;
+//     }
 
-    if (intent === "TIMELINE") {
-      let response = `## Project Timeline\n\n`;
+//     if (intent === "TIMELINE") {
+//       let response = `## Project Timeline\n\n`;
 
-      // Group by due date (month)
-      const issuesByMonth = {};
-      jiraData.issues.forEach((issue) => {
-        if (!issue.fields.duedate) return;
+//       // Group by due date (month)
+//       const issuesByMonth = {};
+//       jiraData.issues.forEach((issue) => {
+//         if (!issue.fields.duedate) return;
 
-        const dueDate = new Date(issue.fields.duedate);
-        const month = dueDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+//         const dueDate = new Date(issue.fields.duedate);
+//         const month = dueDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
 
-        if (!issuesByMonth[month]) {
-          issuesByMonth[month] = [];
-        }
+//         if (!issuesByMonth[month]) {
+//           issuesByMonth[month] = [];
+//         }
 
-        issuesByMonth[month].push(issue);
-      });
+//         issuesByMonth[month].push(issue);
+//       });
 
-      // Format timeline
-      if (Object.keys(issuesByMonth).length === 0) {
-        response += "I didn't find any issues with due dates in the timeline.";
-      } else {
-        for (const [month, issues] of Object.entries(issuesByMonth)) {
-          response += `### ${month}\n`;
+//       // Format timeline
+//       if (Object.keys(issuesByMonth).length === 0) {
+//         response += "I didn't find any issues with due dates in the timeline.";
+//       } else {
+//         for (const [month, issues] of Object.entries(issuesByMonth)) {
+//           response += `### ${month}\n`;
 
-          issues.forEach((issue) => {
-            const status = issue.fields.status?.name || "Unknown";
-            const dueDate = new Date(issue.fields.duedate).toLocaleDateString();
-            response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Due: ${dueDate}, ${status})\n`;
-          });
+//           issues.forEach((issue) => {
+//             const status = issue.fields.status?.name || "Unknown";
+//             const dueDate = new Date(issue.fields.duedate).toLocaleDateString();
+//             response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Due: ${dueDate}, ${status})\n`;
+//           });
 
-          response += "\n";
-        }
-      }
+//           response += "\n";
+//         }
+//       }
 
       
 
-      return response;
-    }
+//       return response;
+//     }
 
-    if (intent === "BLOCKERS" || intent === "HIGH_PRIORITY") {
-      let response = `## Key Issues Requiring Attention\n\n`;
+//     if (intent === "BLOCKERS" || intent === "HIGH_PRIORITY") {
+//       let response = `## Key Issues Requiring Attention\n\n`;
 
-      const priorityCounts = {};
-      jiraData.issues.forEach((issue) => {
-        const priority = issue.fields.priority?.name || "Unknown";
-        priorityCounts[priority] = (priorityCounts[priority] || 0) + 1;
-      });
+//       const priorityCounts = {};
+//       jiraData.issues.forEach((issue) => {
+//         const priority = issue.fields.priority?.name || "Unknown";
+//         priorityCounts[priority] = (priorityCounts[priority] || 0) + 1;
+//       });
 
-      response += `I found ${issueCount} issues that need attention:\n\n`;
+//       response += `I found ${issueCount} issues that need attention:\n\n`;
 
-      // Group by priority
-      jiraData.issues.forEach((issue) => {
-        const priority = issue.fields.priority?.name || "Unknown";
-        const status = issue.fields.status?.name || "Unknown";
-        const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//       // Group by priority
+//       jiraData.issues.forEach((issue) => {
+//         const priority = issue.fields.priority?.name || "Unknown";
+//         const status = issue.fields.status?.name || "Unknown";
+//         const assignee = issue.fields.assignee?.displayName || "Unassigned";
 
-        response += `• **${createJiraLink(issue.key)}**: ${issue.fields.summary} (${priority}, ${status}, Assigned to: ${assignee})\n`;
-      });
+//         response += `• **${createJiraLink(issue.key)}**: ${issue.fields.summary} (${priority}, ${status}, Assigned to: ${assignee})\n`;
+//       });
 
-      return response;
-    }
+//       return response;
+//     }
 
-    if (intent === "ASSIGNED_TASKS" || intent === "WORKLOAD") {
-      let response = `## Team Workload\n\n`;
+//     if (intent === "ASSIGNED_TASKS" || intent === "WORKLOAD") {
+//       let response = `## Team Workload\n\n`;
 
-      if (jiraData.jql) {
-        const jiraFilterLink = createJiraFilterLink(jiraData.jql);
-        response += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
-      }
+//       if (jiraData.jql) {
+//         const jiraFilterLink = createJiraFilterLink(jiraData.jql);
+//         response += `\n\n[🡕 View these tasks in Jira](${jiraFilterLink})`;
+//       }
 
-      // Group by assignee
-      const issuesByAssignee = {};
-      jiraData.issues.forEach((issue) => {
-        const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//       // Group by assignee
+//       const issuesByAssignee = {};
+//       jiraData.issues.forEach((issue) => {
+//         const assignee = issue.fields.assignee?.displayName || "Unassigned";
 
-        if (!issuesByAssignee[assignee]) {
-          issuesByAssignee[assignee] = [];
-        }
+//         if (!issuesByAssignee[assignee]) {
+//           issuesByAssignee[assignee] = [];
+//         }
 
-        issuesByAssignee[assignee].push(issue);
-      });
+//         issuesByAssignee[assignee].push(issue);
+//       });
 
-      // Format by assignee
-      for (const [assignee, issues] of Object.entries(issuesByAssignee)) {
-        response += `### ${assignee} (${issues.length} issues)\n`;
+//       // Format by assignee
+//       for (const [assignee, issues] of Object.entries(issuesByAssignee)) {
+//         response += `### ${assignee} (${issues.length} issues)\n`;
 
-        issues.slice(0, 3).forEach((issue) => {
-          const status = issue.fields.status?.name || "Unknown";
-          response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
-        });
+//         issues.slice(0, 3).forEach((issue) => {
+//           const status = issue.fields.status?.name || "Unknown";
+//           response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
+//         });
 
-        if (issues.length > 3) {
-          response += `... and ${issues.length - 3} more issues.\n`;
-        }
+//         if (issues.length > 3) {
+//           response += `... and ${issues.length - 3} more issues.\n`;
+//         }
 
-        response += "\n";
-      }
+//         response += "\n";
+//       }
 
 
 
-      return response;
-    }
+//       return response;
+//     }
 
-    if (intent === "TASK_DETAILS" && jiraData.issues.length > 0) {
-      const issue = jiraData.issues[0];
-      const status = issue.fields.status?.name || "Unknown";
-      const assignee = issue.fields.assignee?.displayName || "Unassigned";
-      const summary = issue.fields.summary || "No summary";
-      const priority = issue.fields.priority?.name || "Not set";
-      const created = new Date(issue.fields.created).toLocaleDateString();
-      const updated = new Date(issue.fields.updated).toLocaleDateString();
+//     if (intent === "TASK_DETAILS" && jiraData.issues.length > 0) {
+//       const issue = jiraData.issues[0];
+//       const status = issue.fields.status?.name || "Unknown";
+//       const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//       const summary = issue.fields.summary || "No summary";
+//       const priority = issue.fields.priority?.name || "Not set";
+//       const created = new Date(issue.fields.created).toLocaleDateString();
+//       const updated = new Date(issue.fields.updated).toLocaleDateString();
 
-      const response =
-        `## ${createJiraLink(issue.key)}: ${summary}\n\n` +
-        `**Status**: ${status}\n` +
-        `**Priority**: ${priority}\n` +
-        `**Assignee**: ${assignee}\n` +
-        `**Created**: ${created}\n` +
-        `**Last Updated**: ${updated}\n\n`;
+//       const response =
+//         `## ${createJiraLink(issue.key)}: ${summary}\n\n` +
+//         `**Status**: ${status}\n` +
+//         `**Priority**: ${priority}\n` +
+//         `**Assignee**: ${assignee}\n` +
+//         `**Created**: ${created}\n` +
+//         `**Last Updated**: ${updated}\n\n`;
 
-      return response;
-    }
+//       return response;
+//     }
 
-    // Default fallback for other intents
-    // Group by status for better organization
-    const issuesByStatus = {};
-    jiraData.issues.forEach((issue) => {
-      const status = issue.fields.status?.name || "Unknown";
-      if (!issuesByStatus[status]) {
-        issuesByStatus[status] = [];
-      }
-      issuesByStatus[status].push(issue);
-    });
+//     // Default fallback for other intents
+//     // Group by status for better organization
+//     const issuesByStatus = {};
+//     jiraData.issues.forEach((issue) => {
+//       const status = issue.fields.status?.name || "Unknown";
+//       if (!issuesByStatus[status]) {
+//         issuesByStatus[status] = [];
+//       }
+//       issuesByStatus[status].push(issue);
+//     });
 
-    // Choose a varied opening phrase
-    const openingPhrases = [
-      `I found ${issueCount} issues related to your query.`,
-      `There are ${issueCount} issues that match what you're looking for.`,
-      `Your search returned ${issueCount} issues.`,
-      `I've located ${issueCount} relevant issues in the project.`,
-      `Looking at your query, I found ${issueCount} matching issues.`,
-    ];
+//     // Choose a varied opening phrase
+//     const openingPhrases = [
+//       `I found ${issueCount} issues related to your query.`,
+//       `There are ${issueCount} issues that match what you're looking for.`,
+//       `Your search returned ${issueCount} issues.`,
+//       `I've located ${issueCount} relevant issues in the project.`,
+//       `Looking at your query, I found ${issueCount} matching issues.`,
+//     ];
 
-    let response = openingPhrases[Math.floor(Math.random() * openingPhrases.length)];
-    if (totalCount > issueCount) {
-      response += ` (Out of ${totalCount} total in the project)`;
-    }
-    response += `\n\n`;
+//     let response = openingPhrases[Math.floor(Math.random() * openingPhrases.length)];
+//     if (totalCount > issueCount) {
+//       response += ` (Out of ${totalCount} total in the project)`;
+//     }
+//     response += `\n\n`;
 
-    // Format in a more readable way
-    for (const [status, issues] of Object.entries(issuesByStatus)) {
-      response += `**${status}**:\n`;
-      issues.forEach((issue) => {
-        const assignee = issue.fields.assignee?.displayName || "Unassigned";
-        response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Assigned to: ${assignee})\n`;
-      });
-      response += "\n";
-    }
+//     // Format in a more readable way
+//     for (const [status, issues] of Object.entries(issuesByStatus)) {
+//       response += `**${status}**:\n`;
+//       issues.forEach((issue) => {
+//         const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//         response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Assigned to: ${assignee})\n`;
+//       });
+//       response += "\n";
+//     }
 
-    // Varied closing prompts
-    const closingPrompts = [
-      "Is there a specific issue you'd like to know more about?",
-      "Would you like details about any of these issues?",
-      "Let me know if you need more information on any particular issue.",
-      "I can tell you more about any of these issues if you're interested.",
-      "Would you like to dive deeper into any of these?",
-    ];
+//     // Varied closing prompts
+//     const closingPrompts = [
+//       "Is there a specific issue you'd like to know more about?",
+//       "Would you like details about any of these issues?",
+//       "Let me know if you need more information on any particular issue.",
+//       "I can tell you more about any of these issues if you're interested.",
+//       "Would you like to dive deeper into any of these?",
+//     ];
 
-    response += closingPrompts[Math.floor(Math.random() * closingPrompts.length)];
+//     response += closingPrompts[Math.floor(Math.random() * closingPrompts.length)];
 
-    return response;
-  }
-}
+//     return response;
+//   }
+// }
 
 // Helper functions for extracting context from conversation
-function extractRecentIssues(queries) {
-  const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "gi");
-  const issues = [];
+// function extractRecentIssues(queries) {
+//   const issueKeyPattern = new RegExp(`${process.env.JIRA_PROJECT_KEY}-\\d+`, "gi");
+//   const issues = [];
 
-  queries?.forEach((query) => {
-    const matches = query.match(issueKeyPattern);
-    if (matches) issues.push(...matches);
-  });
+//   queries?.forEach((query) => {
+//     const matches = query.match(issueKeyPattern);
+//     if (matches) issues.push(...matches);
+//   });
 
-  return [...new Set(issues)].slice(-3); // Only keep most recent 3 unique issues
-}
+//   return [...new Set(issues)].slice(-3); // Only keep most recent 3 unique issues
+// }
 
-function extractRecentAssignees(queries) {
-  const assigneePattern = /assigned to ([\w\s]+)|(\w+)'s tasks/gi;
-  const assignees = [];
+// function extractRecentAssignees(queries) {
+//   const assigneePattern = /assigned to ([\w\s]+)|(\w+)'s tasks/gi;
+//   const assignees = [];
 
-  queries?.forEach((query) => {
-    let match;
-    while ((match = assigneePattern.exec(query)) !== null) {
-      const assignee = match[1] || match[2];
-      if (assignee) assignees.push(assignee.trim());
-    }
-  });
+//   queries?.forEach((query) => {
+//     let match;
+//     while ((match = assigneePattern.exec(query)) !== null) {
+//       const assignee = match[1] || match[2];
+//       if (assignee) assignees.push(assignee.trim());
+//     }
+//   });
 
-  return [...new Set(assignees)].slice(-3); // Only keep most recent 3 unique assignees
-}
+//   return [...new Set(assignees)].slice(-3); // Only keep most recent 3 unique assignees
+// }
 
 // Store conversation context
 // Enhanced conversation memory with user preference tracking
@@ -3493,128 +3504,128 @@ function extractRecentAssignees(queries) {
 // }
 
 // Helper to determine how many results to fetch based on intent and user context
-function determineResultsLimit(intent, userContext) {
-  // For detailed users, return more results
-  const isDetailedUser = userContext.preferences.verbosityLevel === "detailed";
+// function determineResultsLimit(intent, userContext) {
+//   // For detailed users, return more results
+//   const isDetailedUser = userContext.preferences.verbosityLevel === "detailed";
 
-  switch (intent) {
-    case "TASK_LIST":
-    case "ASSIGNED_TASKS":
-      return isDetailedUser ? 30 : 20;
-    case "TIMELINE":
-      return isDetailedUser ? 75 : 50;
-    case "WORKLOAD":
-      return 100; // Need comprehensive data for workload analysis
-    case "PROJECT_STATUS":
-      return isDetailedUser ? 75 : 50;
-    default:
-      return isDetailedUser ? 30 : 20;
-  }
-}
+//   switch (intent) {
+//     case "TASK_LIST":
+//     case "ASSIGNED_TASKS":
+//       return isDetailedUser ? 30 : 20;
+//     case "TIMELINE":
+//       return isDetailedUser ? 75 : 50;
+//     case "WORKLOAD":
+//       return 100; // Need comprehensive data for workload analysis
+//     case "PROJECT_STATUS":
+//       return isDetailedUser ? 75 : 50;
+//     default:
+//       return isDetailedUser ? 30 : 20;
+//   }
+// }
 
-function handleQueryError(error, query, sessionId) {
-  console.error("Error details:", error);
+// function handleQueryError(error, query, sessionId) {
+//   console.error("Error details:", error);
 
-  // Create a friendly error message based on the type of error
-  if (error.response && error.response.status === 400) {
-    return "I'm having trouble understanding that query. Could you try rephrasing it?";
-  } else if (error.response && error.response.status === 401) {
-    return "I'm having trouble accessing the Jira data right now. This might be an authentication issue.";
-  } else if (error.response && error.response.status === 404) {
-    return "I couldn't find what you're looking for. Please check if the issue or project exists.";
-  } else if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND") {
-    return "I can't connect to Jira at the moment. Please check your connection and try again later.";
-  } else if (error.message && error.message.includes("timeout")) {
-    return "The request took too long to complete. Please try a simpler query or try again later.";
-  } else if (error.message && error.message.includes("JQL")) {
-    return "I couldn't properly format your query. Could you try phrasing it differently?";
-  }
+//   // Create a friendly error message based on the type of error
+//   if (error.response && error.response.status === 400) {
+//     return "I'm having trouble understanding that query. Could you try rephrasing it?";
+//   } else if (error.response && error.response.status === 401) {
+//     return "I'm having trouble accessing the Jira data right now. This might be an authentication issue.";
+//   } else if (error.response && error.response.status === 404) {
+//     return "I couldn't find what you're looking for. Please check if the issue or project exists.";
+//   } else if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND") {
+//     return "I can't connect to Jira at the moment. Please check your connection and try again later.";
+//   } else if (error.message && error.message.includes("timeout")) {
+//     return "The request took too long to complete. Please try a simpler query or try again later.";
+//   } else if (error.message && error.message.includes("JQL")) {
+//     return "I couldn't properly format your query. Could you try phrasing it differently?";
+//   }
 
-  // For general fallback errors
-  const generalErrorMessages = [
-    "I encountered an issue while processing your request. Could you try again?",
-    "Something went wrong on my end. Let's try a different approach.",
-    "I'm having trouble with that query. Could you rephrase it or try something else?",
-    "I wasn't able to complete that request successfully. Let's try something simpler.",
-  ];
+//   // For general fallback errors
+//   const generalErrorMessages = [
+//     "I encountered an issue while processing your request. Could you try again?",
+//     "Something went wrong on my end. Let's try a different approach.",
+//     "I'm having trouble with that query. Could you rephrase it or try something else?",
+//     "I wasn't able to complete that request successfully. Let's try something simpler.",
+//   ];
 
-  return generalErrorMessages[Math.floor(Math.random() * generalErrorMessages.length)];
-}
+//   return generalErrorMessages[Math.floor(Math.random() * generalErrorMessages.length)];
+// }
 
-function createFallbackResponse(data, intent, query) {
-  // Default fallback
-  let response = `I found ${data.issues ? data.issues.length : 0} issues related to your query.`;
+// function createFallbackResponse(data, intent, query) {
+//   // Default fallback
+//   let response = `I found ${data.issues ? data.issues.length : 0} issues related to your query.`;
 
-  if (!data.issues || data.issues.length === 0) {
-    return "I couldn't find any issues matching your criteria.";
-  }
+//   if (!data.issues || data.issues.length === 0) {
+//     return "I couldn't find any issues matching your criteria.";
+//   }
 
-  // Add some basic formatting based on intent
-  if (intent === "PROJECT_STATUS") {
-    response = `## Project Status Overview\n\n`;
+//   // Add some basic formatting based on intent
+//   if (intent === "PROJECT_STATUS") {
+//     response = `## Project Status Overview\n\n`;
 
-    // Group by status
-    const statusCounts = {};
-    data.issues.forEach((issue) => {
-      const status = issue.fields.status?.name || "Unknown";
-      statusCounts[status] = (statusCounts[status] || 0) + 1;
-    });
+//     // Group by status
+//     const statusCounts = {};
+//     data.issues.forEach((issue) => {
+//       const status = issue.fields.status?.name || "Unknown";
+//       statusCounts[status] = (statusCounts[status] || 0) + 1;
+//     });
 
-    // Add status breakdown
-    for (const [status, count] of Object.entries(statusCounts)) {
-      response += `• **${status}**: ${count} issues\n`;
-    }
+//     // Add status breakdown
+//     for (const [status, count] of Object.entries(statusCounts)) {
+//       response += `• **${status}**: ${count} issues\n`;
+//     }
 
-    // Add some recent issues
-    response += `\n### Recent Activity\n`;
-    for (let i = 0; i < Math.min(3, data.issues.length); i++) {
-      const issue = data.issues[i];
-      const status = issue.fields.status?.name || "Unknown";
-      response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
-    }
-  } else if (intent === "TASK_DETAILS" && data.issues.length > 0) {
-    const issue = data.issues[0];
-    const status = issue.fields.status?.name || "Unknown";
-    const assignee = issue.fields.assignee?.displayName || "Unassigned";
-    const summary = issue.fields.summary || "No summary";
-    const priority = issue.fields.priority?.name || "Not set";
+//     // Add some recent issues
+//     response += `\n### Recent Activity\n`;
+//     for (let i = 0; i < Math.min(3, data.issues.length); i++) {
+//       const issue = data.issues[i];
+//       const status = issue.fields.status?.name || "Unknown";
+//       response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (${status})\n`;
+//     }
+//   } else if (intent === "TASK_DETAILS" && data.issues.length > 0) {
+//     const issue = data.issues[0];
+//     const status = issue.fields.status?.name || "Unknown";
+//     const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//     const summary = issue.fields.summary || "No summary";
+//     const priority = issue.fields.priority?.name || "Not set";
 
-    const title = createJiraLink(issue.key);
-    response =
-      `## ${title}: ${summary}\n\n` + `**Status**: ${status}\n` + `**Priority**: ${priority}\n` + `**Assignee**: ${assignee}\n`;
-  } else {
-    // Default formatting for other intents
-    response += "\n\n";
+//     const title = createJiraLink(issue.key);
+//     response =
+//       `## ${title}: ${summary}\n\n` + `**Status**: ${status}\n` + `**Priority**: ${priority}\n` + `**Assignee**: ${assignee}\n`;
+//   } else {
+//     // Default formatting for other intents
+//     response += "\n\n";
 
-    // Group issues by status
-    const groupedByStatus = {};
-    data.issues.forEach((issue) => {
-      const status = issue.fields.status?.name || "Unknown";
-      if (!groupedByStatus[status]) {
-        groupedByStatus[status] = [];
-      }
-      groupedByStatus[status].push(issue);
-    });
+//     // Group issues by status
+//     const groupedByStatus = {};
+//     data.issues.forEach((issue) => {
+//       const status = issue.fields.status?.name || "Unknown";
+//       if (!groupedByStatus[status]) {
+//         groupedByStatus[status] = [];
+//       }
+//       groupedByStatus[status].push(issue);
+//     });
 
-    // Format issues by status group
-    for (const [status, issues] of Object.entries(groupedByStatus)) {
-      response += `### ${status}\n`;
+//     // Format issues by status group
+//     for (const [status, issues] of Object.entries(groupedByStatus)) {
+//       response += `### ${status}\n`;
 
-      issues.slice(0, 5).forEach((issue) => {
-        const assignee = issue.fields.assignee?.displayName || "Unassigned";
-        response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Assigned to: ${assignee})\n`;
-      });
+//       issues.slice(0, 5).forEach((issue) => {
+//         const assignee = issue.fields.assignee?.displayName || "Unassigned";
+//         response += `• ${createJiraLink(issue.key)}: ${issue.fields.summary} (Assigned to: ${assignee})\n`;
+//       });
 
-      if (issues.length > 5) {
-        response += `... and ${issues.length - 5} more ${status} issues.\n`;
-      }
+//       if (issues.length > 5) {
+//         response += `... and ${issues.length - 5} more ${status} issues.\n`;
+//       }
 
-      response += "\n";
-    }
-  }
+//       response += "\n";
+//     }
+//   }
 
-  return response;
-}
+//   return response;
+// }
 
 
 

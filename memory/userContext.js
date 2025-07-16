@@ -245,3 +245,22 @@ function summarizeLastResponse(lastResponse) {
     return "various project items";
   }
 }
+
+export function determineResultsLimit(intent, userContext) {
+  // For detailed users, return more results
+  const isDetailedUser = userContext.preferences.verbosityLevel === "detailed";
+
+  switch (intent) {
+    case "TASK_LIST":
+    case "ASSIGNED_TASKS":
+      return isDetailedUser ? 30 : 20;
+    case "TIMELINE":
+      return isDetailedUser ? 75 : 50;
+    case "WORKLOAD":
+      return 100; // Need comprehensive data for workload analysis
+    case "PROJECT_STATUS":
+      return isDetailedUser ? 75 : 50;
+    default:
+      return isDetailedUser ? 30 : 20;
+  }
+}
