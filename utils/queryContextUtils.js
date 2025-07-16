@@ -1,6 +1,6 @@
 import { openai } from "../config/openaiConfig.js";
 import { createJiraLink } from "../utils/jiraUtils.js";
-import { extractRecentIssues, extractRecentAssignees } from "./extractors";
+import { extractRecentIssues, extractRecentAssignees } from "./extractors.js";
 
 
 export async function generateResponse(query, jiraData, intent, context = {}) {
