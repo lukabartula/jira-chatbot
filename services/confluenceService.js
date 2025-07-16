@@ -7,11 +7,11 @@ dotenv.config();
 
 
 // CONFLUENCE FUNCTIONALITY START
-export const CONFLUENCE_URL = process.env.CONFLUENCE_URL;
-export const CONFLUENCE_USER = process.env.JIRA_USER;
-export const CONFLUENCE_API_TOKEN = process.env.JIRA_API_TOKEN;
+const CONFLUENCE_URL = process.env.CONFLUENCE_URL;
+const CONFLUENCE_USER = process.env.JIRA_USER;
+const CONFLUENCE_API_TOKEN = process.env.JIRA_API_TOKEN;
 
-export const confluenceAuth = {
+const confluenceAuth = {
   username: CONFLUENCE_USER,
   password: CONFLUENCE_API_TOKEN,
 };
