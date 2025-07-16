@@ -1,5 +1,4 @@
 import axios from "axios";
-import { JIRA_URL } from "../config/jiraConfig.js";
 import dotenv from "dotenv";
 
 dotenv.config();
