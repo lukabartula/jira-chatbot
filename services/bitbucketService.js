@@ -21,10 +21,7 @@ export async function callBitbucketApi(endpoint, params = {}) {
 
     const response = await axios.get(url, {
       params,
-      auth: {
-        username: BITBUCKET_USER,
-        password: BITBUCKET_API_TOKEN,
-      },
+      auth: bitbucketAuth,
       headers: {
         Accept: "application/json",
       },
