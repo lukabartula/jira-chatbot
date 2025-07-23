@@ -6,11 +6,11 @@ import { OpenAI } from "openai";
 import { openai } from "./config/openaiConfig.js";
 import * as cheerio from "cheerio";
 import { safeJqlTemplates } from "./config/jiraConfig.js";
-import { 
-  fallbackGenerateJQL, 
-  generateJQL, 
-  getProjectStatusOverview, 
-  getMostRecentTaskDetails, 
+import {
+  fallbackGenerateJQL,
+  generateJQL,
+  getProjectStatusOverview,
+  getMostRecentTaskDetails,
   getProjectTimeline,
   getTeamWorkload,
   getAdvancedTimeline,
@@ -22,7 +22,7 @@ import { URL } from "url";
 import { analyzeQueryIntent } from "./services/intentService.js";
 import { getConversationMemory, updateConversationMemory, conversationMemory } from "./memory/conversationMemory.js";
 import { getUserContext, detectFollowUpQuery, applyUserContext, getPersonalizedSystemPrompt, determineResultsLimit } from "./memory/userContext.js";
-import { 
+import {
   createJiraLink,
   createJiraFilterLink,
   sanitizeJql,
@@ -30,15 +30,15 @@ import {
   preprocessQuery,
   determineFieldsForIntent,
   compareIssues
- } from "./utils/jiraUtils.js";
- import { getDetailedWorkloadAnalysis } from "./services/workloadService.js";
- import { generateResponse } from "./utils/queryContextUtils.js";
- import {
+} from "./utils/jiraUtils.js";
+import { getDetailedWorkloadAnalysis } from "./services/workloadService.js";
+import { generateResponse } from "./utils/queryContextUtils.js";
+import {
   getBitbucketRepos,
   detectBitbucketIntent,
   handleBitbucketQuery,
 } from './services/bitbucketService.js';
-import { 
+import {
   callConfluenceApi,
   extractPageIdFromUrl,
   indexConfluencePage,
@@ -49,7 +49,7 @@ import {
   detectConfluenceIntent,
   handleConfluenceQuery,
   initializeConfluence
- } from "./services/confluenceService.js";
+} from "./services/confluenceService.js";
 
 
 // Load environment variables
@@ -1332,7 +1332,20 @@ app.get("/api/confluence/status", async (req, res) => {
   }
 });
 
+async function logCurrentUserEmail() {
+  try {
+    const response = await axios.get(`${JIRA_URL}/rest/api/3/myself`, { auth });
+    const email = response.data.emailAddress;
+    console.log("Current user's email:", email);
+    return email;
+  } catch (error) {
+    console.error("Failed to fetch current user's email:", error.message);
+    return null;
+  }
+}
 
+// Example usage: call this function somewhere after server starts
+logCurrentUserEmail();
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
