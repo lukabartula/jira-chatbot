@@ -1352,7 +1352,7 @@ async function logCurrentBitbucketUsername() {
     const response = await axios.get('https://api.bitbucket.org/2.0/user', {
       auth: {
         username: process.env.BITBUCKET_USER,
-        password: process.env.BITBUCKET_APP_PASSWORD, // Use Bitbucket App Password
+        password: process.env.BITBUCKET_API_TOKEN, // Use Bitbucket App Password
       },
     });
     const username = response.data.username;
