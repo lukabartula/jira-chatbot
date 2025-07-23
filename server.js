@@ -1347,6 +1347,26 @@ async function logCurrentUserEmail() {
 // Example usage: call this function somewhere after server starts
 logCurrentUserEmail();
 
+async function logCurrentBitbucketUsername() {
+  try {
+    const response = await axios.get('https://api.bitbucket.org/2.0/user', {
+      auth: {
+        username: process.env.BITBUCKET_USER,
+        password: process.env.BITBUCKET_APP_PASSWORD, // Use Bitbucket App Password
+      },
+    });
+    const username = response.data.username;
+    console.log("Current Bitbucket username:", username);
+    return username;
+  } catch (error) {
+    console.error("Failed to fetch Bitbucket username:", error.message);
+    return null;
+  }
+}
+
+// Example usage: call this function somewhere after server starts
+logCurrentBitbucketUsername();
+
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
