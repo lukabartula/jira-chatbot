@@ -6,6 +6,7 @@ import { OpenAI } from "openai";
 import { openai } from "./config/openaiConfig.js";
 import * as cheerio from "cheerio";
 import { safeJqlTemplates } from "./config/jiraConfig.js";
+
 import {
   fallbackGenerateJQL,
   generateJQL,
@@ -1331,7 +1332,6 @@ app.get("/api/confluence/status", async (req, res) => {
     });
   }
 });
-
 async function logCurrentUserEmail() {
   try {
     const response = await axios.get(`${JIRA_URL}/rest/api/3/myself`, { auth });
@@ -1352,7 +1352,7 @@ async function logCurrentBitbucketUsername() {
     const response = await axios.get('https://api.bitbucket.org/2.0/user', {
       auth: {
         username: process.env.BITBUCKET_USER,
-        password: process.env.BITBUCKET_API_TOKEN, // Use Bitbucket App Password
+        password: process.env.BITBUCKET_APP_PASSWORD, // Use Bitbucket App Password
       },
     });
     const username = response.data.username;
