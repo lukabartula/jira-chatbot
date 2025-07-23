@@ -10,7 +10,7 @@ const JIRA_URL = process.env.JIRA_URL || "https://asioso.atlassian.net";
 
 const bitbucketAuth = {
   username: process.env.BITBUCKET_USER,
-  password: process.env.BITBUCKET_API_TOKEN,
+  password: process.env.BITBUCKET_APP_PASSWORD,
 };
 // Helper function to make Bitbucket API requests
 export async function callBitbucketApi(endpoint, params = {}) {
@@ -20,7 +20,7 @@ export async function callBitbucketApi(endpoint, params = {}) {
 
     const response = await axios.get(url, {
       params,
-      auth: bitbucketAuth,
+      auth: BITBUCKET_API_TOKEN,
       headers: {
         Accept: "application/json",
       },
